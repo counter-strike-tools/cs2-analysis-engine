@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
-    ModuleImage, Pattern, detect_cs2_environment, disassemble, load_symbol_map, load_symbols,
-    parse_u64, run_signature_presets, scan_pattern,
+    ModuleImage, Pattern, build_auto_workspace_report, detect_cs2_environment, disassemble,
+    load_symbol_map, load_symbols, parse_u64, run_signature_presets, scan_pattern,
 };
 
 #[derive(Parser)]
@@ -23,6 +23,15 @@ enum Command {
     Gui,
     /// Detect read-only CS2 context, installs, and module candidates.
     Detect {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Auto-build a CS2 workspace report from detected modules and dump output.
+    Workspace {
+        /// Number of bytes to disassemble from the selected executable section.
+        #[arg(long, default_value_t = 512)]
+        disasm_len: u64,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -128,6 +137,55 @@ fn main() -> Result<()> {
                 for dump in env.dump_candidates {
                     println!("  {}", dump.display());
                 }
+            }
+
+            Ok(())
+        }
+        Command::Workspace { disasm_len, json } => {
+            let report = build_auto_workspace_report(disasm_len)?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("cs2.exe processes: {}", report.environment.processes.len());
+                println!("install roots: {}", report.environment.install_roots.len());
+                println!(
+                    "module candidates: {}",
+                    report.environment.module_candidates.len()
+                );
+                println!(
+                    "dump candidates: {}",
+                    report.environment.dump_candidates.len()
+                );
+                println!(
+                    "selected module: {}",
+                    report
+                        .selected_module
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string())
+                );
+                println!(
+                    "selected dump: {}",
+                    report
+                        .selected_dump
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string())
+                );
+                println!("sections: {}", report.sections.len());
+                println!("symbols: {}", report.symbols.len());
+                println!("disassembly rows: {}", report.disassembly.len());
+                let signature_hits = report
+                    .signature_findings
+                    .iter()
+                    .map(|finding| finding.matches.len())
+                    .sum::<usize>();
+                println!(
+                    "signature groups: {} hits: {}",
+                    report.signature_findings.len(),
+                    signature_hits
+                );
             }
 
             Ok(())

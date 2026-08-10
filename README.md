@@ -62,6 +62,12 @@ Detect CS2 context from the CLI:
 cs2-analysis-engine detect
 ```
 
+Build a full auto workspace report:
+
+```text
+cs2-analysis-engine workspace
+```
+
 List sections:
 
 ```text

@@ -50,6 +50,17 @@ pub struct SignatureFinding {
     pub matches: Vec<PatternMatch>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct WorkspaceReport {
+    pub environment: Cs2Environment,
+    pub selected_module: Option<PathBuf>,
+    pub selected_dump: Option<PathBuf>,
+    pub sections: Vec<SectionInfo>,
+    pub symbols: Vec<LoadedSymbol>,
+    pub disassembly: Vec<DecodedInstruction>,
+    pub signature_findings: Vec<SignatureFinding>,
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct SymbolMap {
     pub symbols: BTreeMap<u64, Vec<String>>,
@@ -510,6 +521,58 @@ pub fn run_signature_presets(image: &ModuleImage) -> Result<Vec<SignatureFinding
         })
         .map(|preset| run_signature_preset(image, &preset))
         .collect()
+}
+
+pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
+    let environment = detect_cs2_environment();
+    let selected_module = select_best_module(&environment.module_candidates).cloned();
+    let selected_dump = environment.dump_candidates.first().cloned();
+
+    let mut sections = Vec::new();
+    let mut disassembly = Vec::new();
+    let mut signature_findings = Vec::new();
+    let mut symbols = Vec::new();
+    let mut symbol_map = SymbolMap::default();
+
+    if let Some(dump) = &selected_dump {
+        symbols = load_symbols(dump, None).unwrap_or_default();
+        symbol_map = load_symbol_map(dump).unwrap_or_default();
+    }
+
+    if let Some(module_path) = &selected_module {
+        let image = ModuleImage::load(module_path)?;
+        sections = image.sections()?;
+        if let Some(section) = sections
+            .iter()
+            .find(|section| section.executable)
+            .or_else(|| sections.first())
+        {
+            disassembly = disassemble(&image, section.address, disasm_len, &symbol_map)?;
+        }
+        signature_findings = run_signature_presets(&image)?;
+    }
+
+    Ok(WorkspaceReport {
+        environment,
+        selected_module,
+        selected_dump,
+        sections,
+        symbols,
+        disassembly,
+        signature_findings,
+    })
+}
+
+fn select_best_module(candidates: &[PathBuf]) -> Option<&PathBuf> {
+    ["client.dll", "engine2.dll"]
+        .into_iter()
+        .find_map(|name| {
+            candidates.iter().find(|path| {
+                path.file_name()
+                    .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+            })
+        })
+        .or_else(|| candidates.first())
 }
 
 fn module_name_matches(path: &Path, hint: &str) -> bool {
