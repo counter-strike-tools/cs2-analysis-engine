@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
     CrossReferenceTargetKind, ModuleImage, Pattern, PatternMatch, StringKind,
     annotate_pattern_matches_with_strings, build_auto_workspace_report, detect_cs2_environment,
-    disassemble, extract_ascii_strings, load_symbol_map, load_symbols, parse_u64,
-    run_signature_presets, scan_pattern,
+    disassemble, extract_ascii_strings, filter_pattern_matches, load_symbol_map, load_symbols,
+    parse_string_kind_name, parse_u64, run_signature_presets, scan_pattern,
 };
 
 #[derive(Parser)]
@@ -75,6 +75,15 @@ enum Command {
         /// Maximum text rows to print. JSON output always includes all matches.
         #[arg(long, default_value_t = 200)]
         limit: usize,
+        /// Only keep matches from this section name, for example .text or .rdata.
+        #[arg(long)]
+        section: Option<String>,
+        /// Only keep matches with a nearby string anchor of this kind.
+        #[arg(long)]
+        near_kind: Option<String>,
+        /// Only keep matches that have any nearby string anchor.
+        #[arg(long)]
+        with_anchor: bool,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -315,6 +324,9 @@ fn main() -> Result<()> {
             module,
             pattern,
             limit,
+            section,
+            near_kind,
+            with_anchor,
             json,
         } => {
             let image = ModuleImage::load(&module)?;
@@ -325,6 +337,12 @@ fn main() -> Result<()> {
                 &strings,
                 512,
             );
+            let near_kind = near_kind
+                .as_deref()
+                .map(parse_required_string_kind)
+                .transpose()?;
+            let matches =
+                filter_pattern_matches(matches, section.as_deref(), near_kind, with_anchor);
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&matches)?);
@@ -424,6 +442,14 @@ fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String
         (None, Some(symbol)) => format!("=> {symbol}"),
         (None, None) => String::new(),
     }
+}
+
+fn parse_required_string_kind(input: &str) -> Result<StringKind> {
+    parse_string_kind_name(input).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown string kind '{input}'. Use interface, schema, class, convar, source-path, format, decorated-symbol, or other"
+        )
+    })
 }
 
 fn format_pattern_match(item: &PatternMatch) -> String {

@@ -7,8 +7,8 @@ use crate::engine::{
     CrossReference, CrossReferenceTargetKind, Cs2Environment, DecodedInstruction, LoadedSymbol,
     ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, StringKind, StringReference,
     SymbolMap, annotate_pattern_matches_with_strings, detect_cs2_environment, disassemble,
-    extract_ascii_strings, extract_cross_references, load_symbol_map, load_symbols, parse_u64,
-    run_signature_presets, scan_pattern,
+    extract_ascii_strings, extract_cross_references, filter_pattern_matches, load_symbol_map,
+    load_symbols, parse_string_kind_name, parse_u64, run_signature_presets, scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -56,6 +56,9 @@ struct AnalysisApp {
     disasm_len: String,
     disasm_is_rva: bool,
     scan_pattern_text: String,
+    scan_section_filter: String,
+    scan_anchor_kind_filter: String,
+    scan_require_anchor: bool,
     instructions: Vec<DecodedInstruction>,
     cross_references: Vec<CrossReference>,
     strings: Vec<StringReference>,
@@ -92,6 +95,9 @@ impl Default for AnalysisApp {
             disasm_len: "256".to_string(),
             disasm_is_rva: false,
             scan_pattern_text: String::new(),
+            scan_section_filter: String::new(),
+            scan_anchor_kind_filter: String::new(),
+            scan_require_anchor: false,
             instructions: Vec::new(),
             cross_references: Vec::new(),
             strings: Vec::new(),
@@ -596,6 +602,19 @@ impl AnalysisApp {
                 ui.ctx().copy_text(self.output.clone());
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Section");
+            ui.add_sized(
+                [96.0, 24.0],
+                TextEdit::singleline(&mut self.scan_section_filter).hint_text(".text"),
+            );
+            ui.label("Nearby kind");
+            ui.add_sized(
+                [132.0, 24.0],
+                TextEdit::singleline(&mut self.scan_anchor_kind_filter).hint_text("interface"),
+            );
+            ui.checkbox(&mut self.scan_require_anchor, "Has nearby string");
+        });
 
         ui.add_space(8.0);
         ui.label(
@@ -809,6 +828,21 @@ impl AnalysisApp {
                     &strings,
                     512,
                 );
+                let section = non_empty_trimmed(&self.scan_section_filter);
+                let anchor_kind = match non_empty_trimmed(&self.scan_anchor_kind_filter) {
+                    Some(value) => match parse_string_kind_name(value) {
+                        Some(kind) => Some(kind),
+                        None => {
+                            self.status = format!(
+                                "Unknown nearby kind '{value}'. Use interface, schema, class, convar, source-path, format, decorated-symbol, or other."
+                            );
+                            return;
+                        }
+                    },
+                    None => None,
+                };
+                let matches =
+                    filter_pattern_matches(matches, section, anchor_kind, self.scan_require_anchor);
                 self.strings = strings;
                 self.scan_matches = matches;
                 self.status = format!("Found {} matches.", self.scan_matches.len());
@@ -1198,6 +1232,11 @@ fn format_nearby_string(item: &PatternMatch) -> String {
             )
         })
         .unwrap_or_default()
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 fn format_cross_reference_kind(kind: CrossReferenceTargetKind) -> &'static str {

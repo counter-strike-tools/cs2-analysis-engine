@@ -665,6 +665,40 @@ pub fn annotate_pattern_matches_with_strings(
     matches
 }
 
+pub fn filter_pattern_matches(
+    matches: Vec<PatternMatch>,
+    section: Option<&str>,
+    anchor_kind: Option<StringKind>,
+    require_anchor: bool,
+) -> Vec<PatternMatch> {
+    matches
+        .into_iter()
+        .filter(|item| {
+            section.is_none_or(|section| item.section.eq_ignore_ascii_case(section))
+                && anchor_kind.is_none_or(|kind| {
+                    item.nearby_string
+                        .as_ref()
+                        .is_some_and(|anchor| anchor.kind == kind)
+                })
+                && (!require_anchor || item.nearby_string.is_some())
+        })
+        .collect()
+}
+
+pub fn parse_string_kind_name(input: &str) -> Option<StringKind> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "interface" | "interface-name" => Some(StringKind::InterfaceName),
+        "schema" | "schema-name" => Some(StringKind::SchemaName),
+        "class" | "class-name" => Some(StringKind::ClassName),
+        "convar" | "con-command" | "concommand" => Some(StringKind::ConVar),
+        "source" | "source-path" | "path" => Some(StringKind::SourcePath),
+        "format" | "format-string" => Some(StringKind::FormatString),
+        "decorated" | "decorated-symbol" => Some(StringKind::DecoratedSymbol),
+        "other" => Some(StringKind::Other),
+        _ => None,
+    }
+}
+
 pub fn nearest_string_anchor(
     strings: &[StringReference],
     virtual_address: u64,
@@ -1181,5 +1215,72 @@ mod tests {
         }];
 
         assert!(nearest_string_anchor(&strings, 0x1800_1300, 0x40).is_none());
+    }
+
+    #[test]
+    fn filters_pattern_matches_by_section_and_anchor_kind() {
+        let matches = vec![
+            PatternMatch {
+                rva: 0x1000,
+                virtual_address: 0x1800_1000,
+                section: ".text".to_string(),
+                nearby_string: Some(NearbyStringAnchor {
+                    rva: 0x1100,
+                    virtual_address: 0x1800_1100,
+                    section: ".rdata".to_string(),
+                    kind: StringKind::InterfaceName,
+                    value: "Source2Client002".to_string(),
+                    distance: 0x100,
+                }),
+            },
+            PatternMatch {
+                rva: 0x2000,
+                virtual_address: 0x1800_2000,
+                section: ".rdata".to_string(),
+                nearby_string: Some(NearbyStringAnchor {
+                    rva: 0x2010,
+                    virtual_address: 0x1800_2010,
+                    section: ".rdata".to_string(),
+                    kind: StringKind::ConVar,
+                    value: "sv_cheats".to_string(),
+                    distance: 0x10,
+                }),
+            },
+            PatternMatch {
+                rva: 0x3000,
+                virtual_address: 0x1800_3000,
+                section: ".text".to_string(),
+                nearby_string: None,
+            },
+        ];
+
+        assert_eq!(
+            filter_pattern_matches(matches.clone(), Some(".TEXT"), None, false).len(),
+            2
+        );
+        assert_eq!(
+            filter_pattern_matches(
+                matches.clone(),
+                None,
+                Some(StringKind::InterfaceName),
+                false
+            )
+            .len(),
+            1
+        );
+        assert_eq!(filter_pattern_matches(matches, None, None, true).len(), 2);
+    }
+
+    #[test]
+    fn parses_string_kind_filter_names() {
+        assert_eq!(
+            parse_string_kind_name("source-path"),
+            Some(StringKind::SourcePath)
+        );
+        assert_eq!(
+            parse_string_kind_name("decorated"),
+            Some(StringKind::DecoratedSymbol)
+        );
+        assert_eq!(parse_string_kind_name("not-a-kind"), None);
     }
 }
