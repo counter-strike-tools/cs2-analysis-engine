@@ -6,9 +6,9 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 use crate::engine::{
     CrossReference, CrossReferenceTargetKind, Cs2Environment, DecodedInstruction, LoadedSymbol,
     ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, StringKind, StringReference,
-    SymbolMap, detect_cs2_environment, disassemble, extract_ascii_strings,
-    extract_cross_references, load_symbol_map, load_symbols, parse_u64, run_signature_presets,
-    scan_pattern,
+    SymbolMap, annotate_pattern_matches_with_strings, detect_cs2_environment, disassemble,
+    extract_ascii_strings, extract_cross_references, load_symbol_map, load_symbols, parse_u64,
+    run_signature_presets, scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -632,15 +632,19 @@ impl AnalysisApp {
 
             egui::Grid::new("scan_grid")
                 .striped(true)
-                .num_columns(2)
+                .num_columns(4)
                 .show(ui, |ui| {
+                    ui.strong("Section");
                     ui.strong("RVA");
                     ui.strong("Virtual address");
+                    ui.strong("Nearby string");
                     ui.end_row();
 
                     for item in &self.scan_matches {
+                        ui.monospace(&item.section);
                         ui.monospace(format!("{:#010x}", item.rva));
                         ui.monospace(format!("{:#014x}", item.virtual_address));
+                        ui.label(format_nearby_string(item));
                         ui.end_row();
                     }
                 });
@@ -795,7 +799,18 @@ impl AnalysisApp {
 
         match Pattern::parse(self.scan_pattern_text.trim()) {
             Ok(pattern) => {
-                self.scan_matches = scan_pattern(module, &pattern);
+                let strings = if self.strings.is_empty() {
+                    extract_ascii_strings(module, 5)
+                } else {
+                    self.strings.clone()
+                };
+                let matches = annotate_pattern_matches_with_strings(
+                    scan_pattern(module, &pattern),
+                    &strings,
+                    512,
+                );
+                self.strings = strings;
+                self.scan_matches = matches;
                 self.status = format!("Found {} matches.", self.scan_matches.len());
                 self.active_tab = Tab::Signatures;
                 self.build_scan_output();
@@ -938,6 +953,9 @@ impl AnalysisApp {
             self.scan_matches.len()
         )
         .ok();
+        for item in self.scan_matches.iter().take(80) {
+            writeln!(&mut report, "  {}", format_pattern_match(item)).ok();
+        }
         writeln!(
             &mut report,
             "signature groups: {}",
@@ -978,12 +996,7 @@ impl AnalysisApp {
     fn build_scan_output(&mut self) {
         let mut out = String::new();
         for item in &self.scan_matches {
-            writeln!(
-                &mut out,
-                "rva={:#x} va={:#x}",
-                item.rva, item.virtual_address
-            )
-            .ok();
+            writeln!(&mut out, "{}", format_pattern_match(item)).ok();
         }
         self.output = out;
     }
@@ -1032,12 +1045,7 @@ impl AnalysisApp {
             writeln!(&mut out, "  pattern: {}", finding.pattern).ok();
             writeln!(&mut out, "  {}", finding.description).ok();
             for item in finding.matches.iter().take(50) {
-                writeln!(
-                    &mut out,
-                    "    rva={:#x} va={:#x}",
-                    item.rva, item.virtual_address
-                )
-                .ok();
+                writeln!(&mut out, "    {}", format_pattern_match(item)).ok();
             }
         }
         self.output = out;
@@ -1158,6 +1166,38 @@ fn format_instruction_target(instruction: &DecodedInstruction) -> String {
         (None, Some(symbol)) => format!("=> {symbol}"),
         (None, None) => String::new(),
     }
+}
+
+fn format_pattern_match(item: &PatternMatch) -> String {
+    let mut out = format!(
+        "{:<10} rva={:#010x} va={:#014x}",
+        item.section, item.rva, item.virtual_address
+    );
+
+    if let Some(anchor) = &item.nearby_string {
+        out.push_str(&format!(
+            " near +{:#x} {} {}",
+            anchor.distance,
+            format_string_kind(anchor.kind),
+            anchor.value
+        ));
+    }
+
+    out
+}
+
+fn format_nearby_string(item: &PatternMatch) -> String {
+    item.nearby_string
+        .as_ref()
+        .map(|anchor| {
+            format!(
+                "+{:#x} {} {}",
+                anchor.distance,
+                format_string_kind(anchor.kind),
+                anchor.value
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn format_cross_reference_kind(kind: CrossReferenceTargetKind) -> &'static str {

@@ -33,6 +33,18 @@ pub struct DecodedInstruction {
 pub struct PatternMatch {
     pub rva: u64,
     pub virtual_address: u64,
+    pub section: String,
+    pub nearby_string: Option<NearbyStringAnchor>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NearbyStringAnchor {
+    pub rva: u64,
+    pub virtual_address: u64,
+    pub section: String,
+    pub kind: StringKind,
+    pub value: String,
+    pub distance: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -571,6 +583,8 @@ pub fn scan_pattern(image: &ModuleImage, pattern: &Pattern) -> Vec<PatternMatch>
                 matches.push(PatternMatch {
                     rva,
                     virtual_address: image.base + rva,
+                    section: section.name().unwrap_or("<unnamed>").to_string(),
+                    nearby_string: None,
                 });
             }
         }
@@ -617,6 +631,7 @@ pub fn signature_presets() -> Vec<SignaturePreset> {
 pub fn run_signature_preset(
     image: &ModuleImage,
     preset: &SignaturePreset,
+    strings: &[StringReference],
 ) -> Result<SignatureFinding> {
     let pattern = Pattern::parse(preset.pattern)?;
     Ok(SignatureFinding {
@@ -624,18 +639,56 @@ pub fn run_signature_preset(
         module_hint: preset.module_hint.to_string(),
         pattern: preset.pattern.to_string(),
         description: preset.description.to_string(),
-        matches: scan_pattern(image, &pattern),
+        matches: annotate_pattern_matches_with_strings(scan_pattern(image, &pattern), strings, 512),
     })
 }
 
 pub fn run_signature_presets(image: &ModuleImage) -> Result<Vec<SignatureFinding>> {
+    let strings = extract_ascii_strings(image, 5);
     signature_presets()
         .into_iter()
         .filter(|preset| {
             preset.module_hint == "any" || module_name_matches(&image.path, preset.module_hint)
         })
-        .map(|preset| run_signature_preset(image, &preset))
+        .map(|preset| run_signature_preset(image, &preset, &strings))
         .collect()
+}
+
+pub fn annotate_pattern_matches_with_strings(
+    mut matches: Vec<PatternMatch>,
+    strings: &[StringReference],
+    max_distance: u64,
+) -> Vec<PatternMatch> {
+    for item in &mut matches {
+        item.nearby_string = nearest_string_anchor(strings, item.virtual_address, max_distance);
+    }
+    matches
+}
+
+pub fn nearest_string_anchor(
+    strings: &[StringReference],
+    virtual_address: u64,
+    max_distance: u64,
+) -> Option<NearbyStringAnchor> {
+    strings
+        .iter()
+        .filter_map(|item| {
+            let distance = item.virtual_address.abs_diff(virtual_address);
+            (distance <= max_distance).then_some((item, distance))
+        })
+        .min_by(|(left, left_distance), (right, right_distance)| {
+            left_distance
+                .cmp(right_distance)
+                .then(left.virtual_address.cmp(&right.virtual_address))
+        })
+        .map(|(item, distance)| NearbyStringAnchor {
+            rva: item.rva,
+            virtual_address: item.virtual_address,
+            section: item.section.clone(),
+            kind: item.kind,
+            value: item.value.clone(),
+            distance,
+        })
 }
 
 pub fn extract_ascii_strings(image: &ModuleImage, min_len: usize) -> Vec<StringReference> {
@@ -1082,5 +1135,51 @@ mod tests {
             StringKind::Other
         );
         assert_eq!(classify_string_value("plain text"), StringKind::Other);
+    }
+
+    #[test]
+    fn annotates_pattern_matches_with_nearest_string_anchor() {
+        let strings = vec![
+            StringReference {
+                rva: 0x1000,
+                virtual_address: 0x1800_1000,
+                section: ".rdata".to_string(),
+                kind: StringKind::Other,
+                value: "far".to_string(),
+            },
+            StringReference {
+                rva: 0x12f0,
+                virtual_address: 0x1800_12f0,
+                section: ".rdata".to_string(),
+                kind: StringKind::InterfaceName,
+                value: "Source2Client002".to_string(),
+            },
+        ];
+        let matches = vec![PatternMatch {
+            rva: 0x1300,
+            virtual_address: 0x1800_1300,
+            section: ".text".to_string(),
+            nearby_string: None,
+        }];
+
+        let annotated = annotate_pattern_matches_with_strings(matches, &strings, 0x40);
+        let anchor = annotated[0].nearby_string.as_ref().unwrap();
+
+        assert_eq!(anchor.value, "Source2Client002");
+        assert_eq!(anchor.distance, 0x10);
+        assert_eq!(anchor.kind, StringKind::InterfaceName);
+    }
+
+    #[test]
+    fn omits_string_anchor_outside_max_distance() {
+        let strings = vec![StringReference {
+            rva: 0x1000,
+            virtual_address: 0x1800_1000,
+            section: ".rdata".to_string(),
+            kind: StringKind::Other,
+            value: "too far".to_string(),
+        }];
+
+        assert!(nearest_string_anchor(&strings, 0x1800_1300, 0x40).is_none());
     }
 }

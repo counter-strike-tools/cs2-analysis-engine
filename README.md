@@ -13,6 +13,7 @@ anti-cheat, inject code, or automate gameplay.
 - Startup auto-workspace that loads detected dump symbols, loads the best CS2 module candidate, and disassembles the first code section.
 - Recursive workspace scan for `offsets.json` / `output/json/offsets.json` under nearby project folders.
 - Built-in offline signature finders for common x64/RIP-relative/module-analysis patterns.
+- Pattern and signature hits include section names and nearby extracted string anchors when available.
 - Quick-load CS2 module candidates such as `client.dll`, `engine2.dll`, `schemasystem.dll`, `tier0.dll`, and `vstdlib.dll`.
 - Module map for section browsing and focused disassembly.
 - RIP-relative target resolution in disassembly, with dumper-symbol annotations when available.
@@ -92,7 +93,7 @@ cs2-analysis-engine disasm client.dll --start 0x123456 --rva --dump output --len
 Scan for a byte pattern:
 
 ```text
-cs2-analysis-engine scan client.dll "48 8B ?? ?? 89"
+cs2-analysis-engine scan client.dll "48 8B ?? ?? 89" --limit 200
 ```
 
 Extract module strings:

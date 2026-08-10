@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
-    CrossReferenceTargetKind, ModuleImage, Pattern, StringKind, build_auto_workspace_report,
-    detect_cs2_environment, disassemble, extract_ascii_strings, load_symbol_map, load_symbols,
-    parse_u64, run_signature_presets, scan_pattern,
+    CrossReferenceTargetKind, ModuleImage, Pattern, PatternMatch, StringKind,
+    annotate_pattern_matches_with_strings, build_auto_workspace_report, detect_cs2_environment,
+    disassemble, extract_ascii_strings, load_symbol_map, load_symbols, parse_u64,
+    run_signature_presets, scan_pattern,
 };
 
 #[derive(Parser)]
@@ -71,6 +72,9 @@ enum Command {
         module: PathBuf,
         /// Hex pattern, for example: "48 8B ?? ?? 89".
         pattern: String,
+        /// Maximum text rows to print. JSON output always includes all matches.
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -310,19 +314,29 @@ fn main() -> Result<()> {
         Command::Scan {
             module,
             pattern,
+            limit,
             json,
         } => {
             let image = ModuleImage::load(&module)?;
             let pattern = Pattern::parse(&pattern)?;
-            let matches = scan_pattern(&image, &pattern);
+            let strings = extract_ascii_strings(&image, 5);
+            let matches = annotate_pattern_matches_with_strings(
+                scan_pattern(&image, &pattern),
+                &strings,
+                512,
+            );
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&matches)?);
             } else if matches.is_empty() {
                 println!("no matches");
             } else {
-                for item in matches {
-                    println!("rva={:#x} va={:#x}", item.rva, item.virtual_address);
+                let total = matches.len();
+                for item in matches.iter().take(limit) {
+                    println!("{}", format_pattern_match(item));
+                }
+                if total > limit {
+                    println!("... showing {limit} of {total} matches; use --limit to adjust");
                 }
             }
 
@@ -377,7 +391,7 @@ fn main() -> Result<()> {
                     println!("  pattern: {}", finding.pattern);
                     println!("  {}", finding.description);
                     for item in finding.matches.iter().take(20) {
-                        println!("    rva={:#x} va={:#x}", item.rva, item.virtual_address);
+                        println!("    {}", format_pattern_match(item));
                     }
                 }
             }
@@ -410,6 +424,24 @@ fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String
         (None, Some(symbol)) => format!("=> {symbol}"),
         (None, None) => String::new(),
     }
+}
+
+fn format_pattern_match(item: &PatternMatch) -> String {
+    let mut out = format!(
+        "{:<10} rva={:#010x} va={:#014x}",
+        item.section, item.rva, item.virtual_address
+    );
+
+    if let Some(anchor) = &item.nearby_string {
+        out.push_str(&format!(
+            " near +{:#x} {} {}",
+            anchor.distance,
+            format_string_kind(anchor.kind),
+            anchor.value
+        ));
+    }
+
+    out
 }
 
 fn format_string_kind(kind: StringKind) -> &'static str {
