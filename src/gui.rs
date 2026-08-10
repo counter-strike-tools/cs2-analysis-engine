@@ -73,7 +73,7 @@ enum Tab {
 
 impl Default for AnalysisApp {
     fn default() -> Self {
-        Self {
+        let mut app = Self {
             env: detect_cs2_environment(),
             module_path: String::new(),
             dump_path: String::new(),
@@ -91,7 +91,9 @@ impl Default for AnalysisApp {
             status: String::new(),
             output: String::new(),
             active_tab: Tab::Overview,
-        }
+        };
+        app.auto_load_workspace();
+        app
     }
 }
 
@@ -220,6 +222,9 @@ impl AnalysisApp {
                 ui.separator();
                 ui.label("Modules:");
                 ui.label(self.env.module_candidates.len().to_string());
+                ui.separator();
+                ui.label("Dumps:");
+                ui.label(self.env.dump_candidates.len().to_string());
             });
 
             if self.env.processes.is_empty() {
@@ -254,6 +259,19 @@ impl AnalysisApp {
                     if ui.button(file_name).clicked() {
                         self.module_path = module.display().to_string();
                         self.load_module();
+                    }
+                }
+            }
+
+            if !self.env.dump_candidates.is_empty() {
+                ui.separator();
+                ui.label("Auto-detected dump data");
+                let dump_candidates = self.env.dump_candidates.clone();
+                for dump in dump_candidates.iter().take(3) {
+                    let label = dump.display().to_string();
+                    if ui.button(label).clicked() {
+                        self.dump_path = dump.display().to_string();
+                        self.load_symbols();
                     }
                 }
             }
@@ -331,11 +349,25 @@ impl AnalysisApp {
                 self.summary_card(ui, "Sections", &self.sections.len().to_string());
                 self.summary_card(ui, "Dumper symbols", &self.symbols.len().to_string());
                 ui.end_row();
+                self.summary_card(
+                    ui,
+                    "Auto candidates",
+                    &format!(
+                        "{} modules, {} dumps",
+                        self.env.module_candidates.len(),
+                        self.env.dump_candidates.len()
+                    ),
+                );
+                self.summary_card(ui, "Disassembly rows", &self.instructions.len().to_string());
+                ui.end_row();
             });
 
         ui.add_space(18.0);
         ui.heading("Recommended next actions");
         ui.horizontal_wrapped(|ui| {
+            if ui.button("Auto-load CS2 workspace").clicked() {
+                self.auto_load_workspace();
+            }
             if ui.button("Load detected client.dll").clicked() {
                 self.load_first_named_module("client.dll");
             }
@@ -726,17 +758,63 @@ impl AnalysisApp {
         );
     }
 
+    fn auto_load_workspace(&mut self) {
+        self.env = detect_cs2_environment();
+
+        if self.dump_path.trim().is_empty() {
+            if let Some(dump) = self.env.dump_candidates.first() {
+                self.dump_path = dump.display().to_string();
+                self.load_symbols();
+            }
+        }
+
+        if self.module_path.trim().is_empty() {
+            if self.try_load_first_named_module("client.dll")
+                || self.try_load_first_named_module("engine2.dll")
+                || self.try_load_first_module_candidate()
+            {
+                return;
+            }
+        }
+
+        self.status = format!(
+            "Auto workspace ready: {} cs2.exe processes, {} modules, {} dumps. No module was auto-loaded.",
+            self.env.processes.len(),
+            self.env.module_candidates.len(),
+            self.env.dump_candidates.len()
+        );
+        self.build_report();
+    }
+
     fn load_first_named_module(&mut self, name: &str) {
+        if self.try_load_first_named_module(name) {
+            return;
+        }
+
+        self.status = format!("No detected {name}. Use Browse to select it manually.");
+    }
+
+    fn try_load_first_named_module(&mut self, name: &str) -> bool {
         let Some(path) = self.env.module_candidates.iter().find(|path| {
             path.file_name()
                 .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
         }) else {
-            self.status = format!("No detected {name}. Use Browse to select it manually.");
-            return;
+            return false;
         };
 
         self.module_path = path.display().to_string();
         self.load_module();
+        true
+    }
+
+    fn try_load_first_module_candidate(&mut self) -> bool {
+        let Some(path) = self.env.module_candidates.first() else {
+            return false;
+        };
+
+        self.module_path = path.display().to_string();
+        self.load_module();
+        true
     }
 
     fn auto_disassemble_loaded_module(&mut self) {

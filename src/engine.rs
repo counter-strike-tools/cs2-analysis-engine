@@ -43,6 +43,7 @@ pub struct Cs2Environment {
     pub processes: Vec<Cs2Process>,
     pub install_roots: Vec<PathBuf>,
     pub module_candidates: Vec<PathBuf>,
+    pub dump_candidates: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,11 +81,13 @@ pub fn detect_cs2_environment() -> Cs2Environment {
 
     let install_roots = find_steam_cs2_roots();
     let module_candidates = find_cs2_module_candidates(&install_roots);
+    let dump_candidates = find_dumper_output_candidates();
 
     Cs2Environment {
         processes,
         install_roots,
         module_candidates,
+        dump_candidates,
     }
 }
 
@@ -166,6 +169,39 @@ fn find_cs2_module_candidates(install_roots: &[PathBuf]) -> Vec<PathBuf> {
     }
 
     modules
+}
+
+fn find_dumper_output_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let Ok(current_dir) = env::current_dir() else {
+        return candidates;
+    };
+
+    let mut roots = vec![current_dir.clone()];
+    if let Some(parent) = current_dir.parent() {
+        roots.push(parent.to_path_buf());
+    }
+
+    for root in roots {
+        let paths = [
+            root.join("output"),
+            root.join("cs2-dumper").join("output"),
+            root.join("..").join("cs2-dumper").join("output"),
+        ];
+
+        for path in paths {
+            let normalized = fs::canonicalize(&path).unwrap_or(path);
+            if is_dumper_output(&normalized) && !candidates.contains(&normalized) {
+                candidates.push(normalized);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn is_dumper_output(path: &Path) -> bool {
+    path.join("json").join("offsets.json").exists() || path.join("offsets.json").exists()
 }
 
 impl ModuleImage {

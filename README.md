@@ -9,6 +9,8 @@ anti-cheat, inject code, or automate gameplay.
 
 - Desktop GUI built as a CS2 analysis workspace, not a generic debugger clone.
 - Read-only CS2 context detection for running `cs2.exe` process entries, Steam install roots, and module candidates.
+- Auto-detection of existing `cs2-dumper` output folders without asking the user to browse.
+- Startup auto-workspace that loads detected dump symbols, loads the best CS2 module candidate, and disassembles the first code section.
 - Quick-load CS2 module candidates such as `client.dll`, `engine2.dll`, `schemasystem.dll`, `tier0.dll`, and `vstdlib.dll`.
 - Module map for section browsing and focused disassembly.
 - Signature scanner for offline module files.
@@ -33,7 +35,7 @@ Instead, it maps those workflows to safe CS2-specific analysis:
 | Memory viewer | Offline module map and section browser |
 | Disassembler | Offline x86-64 disassembly from module files |
 | Array-of-byte scan | Offline section-aware signature scanner |
-| Cheat tables | `cs2-dumper` JSON symbol workspace |
+| Cheat tables | Auto-loaded `cs2-dumper` JSON symbol workspace |
 | Pointer/symbol notes | Dumper offsets, buttons, interfaces, and reports |
 | Trainers/memory edits | Not implemented |
 | Kernel/debug bypasses | Not implemented |

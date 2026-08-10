@@ -116,6 +116,10 @@ fn main() -> Result<()> {
                 for module in env.module_candidates {
                     println!("  {}", module.display());
                 }
+                println!("dump candidates: {}", env.dump_candidates.len());
+                for dump in env.dump_candidates {
+                    println!("  {}", dump.display());
+                }
             }
 
             Ok(())
