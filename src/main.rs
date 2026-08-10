@@ -8,9 +8,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
     CrossReferenceTargetKind, ModuleImage, Pattern, PatternMatch, StringKind,
     annotate_pattern_matches_with_strings, build_auto_workspace_report, derive_runtime_symbols,
-    detect_cs2_environment, disassemble, extract_ascii_strings, filter_pattern_matches,
-    fingerprint_detected_modules, load_symbol_map, load_symbols, parse_string_kind_name, parse_u64,
-    run_signature_presets, scan_pattern,
+    detect_cs2_environment, disassemble, extract_ascii_strings, filter_loaded_symbols,
+    filter_pattern_matches, fingerprint_detected_modules, load_symbol_map, load_symbols,
+    parse_string_kind_name, parse_u64, run_signature_presets, scan_pattern,
 };
 use serde::Serialize;
 
@@ -149,6 +149,12 @@ enum Command {
         /// Maximum text rows to print. JSON output always includes all symbols.
         #[arg(long, default_value_t = 500)]
         limit: usize,
+        /// Keep only symbols whose name or module contains this text.
+        #[arg(long)]
+        contains: Option<String>,
+        /// Keep only a symbol kind: string, signature, interface, schema, class, convar, source-path, format, or decorated.
+        #[arg(long)]
+        kind: Option<String>,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -435,6 +441,8 @@ fn main() -> Result<()> {
             module,
             min_len,
             limit,
+            contains,
+            kind,
             json,
         } => {
             let module = module
@@ -444,12 +452,14 @@ fn main() -> Result<()> {
             let strings = extract_ascii_strings(&image, min_len);
             let findings = run_signature_presets(&image)?;
             let symbols = derive_runtime_symbols(&image, &strings, &findings);
+            let total_symbols = symbols.len();
+            let symbols = filter_loaded_symbols(symbols, contains.as_deref(), kind.as_deref());
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&symbols)?);
             } else {
                 println!("module: {}", module.display());
-                println!("runtime symbols: {}", symbols.len());
+                println!("runtime symbols: {} of {}", symbols.len(), total_symbols);
                 println!("strings scanned: {}", strings.len());
                 println!(
                     "signature hits: {}",

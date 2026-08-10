@@ -1129,6 +1129,42 @@ pub fn derive_runtime_symbols(
     derive_runtime_symbols_for_module(module, strings, signature_findings)
 }
 
+pub fn filter_loaded_symbols(
+    symbols: Vec<LoadedSymbol>,
+    name_query: Option<&str>,
+    kind_prefix: Option<&str>,
+) -> Vec<LoadedSymbol> {
+    let normalized_query = name_query.map(|query| query.to_ascii_lowercase());
+    let normalized_kind = kind_prefix.map(normalize_symbol_kind_prefix);
+
+    symbols
+        .into_iter()
+        .filter(|symbol| {
+            normalized_query.as_ref().is_none_or(|query| {
+                symbol.name.to_ascii_lowercase().contains(query)
+                    || symbol.module.to_ascii_lowercase().contains(query)
+            }) && normalized_kind
+                .as_ref()
+                .is_none_or(|kind| symbol.name.starts_with(kind))
+        })
+        .collect()
+}
+
+fn normalize_symbol_kind_prefix(input: &str) -> String {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "string" | "runtime-string" => "runtime-string:".to_string(),
+        "signature" | "sig" | "runtime-signature" => "runtime-signature:".to_string(),
+        "interface" => "runtime-string:interface:".to_string(),
+        "schema" => "runtime-string:schema:".to_string(),
+        "class" => "runtime-string:class:".to_string(),
+        "convar" => "runtime-string:convar:".to_string(),
+        "source" | "source-path" => "runtime-string:source-path:".to_string(),
+        "format" => "runtime-string:format:".to_string(),
+        "decorated" => "runtime-string:decorated:".to_string(),
+        value => value.to_string(),
+    }
+}
+
 fn derive_runtime_symbols_for_module(
     module: String,
     strings: &[StringReference],
@@ -1591,6 +1627,43 @@ mod tests {
                 .iter()
                 .all(|symbol| !symbol.name.contains("plain_text"))
         );
+    }
+
+    #[test]
+    fn filters_loaded_symbols_by_query_and_kind_alias() {
+        let symbols = vec![
+            LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-string:interface:Source2Client002".to_string(),
+                value: 0x1800_3000,
+            },
+            LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-string:convar:sv_cheats".to_string(),
+                value: 0x1800_3010,
+            },
+            LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-signature:rip_relative_load:0000".to_string(),
+                value: 0x1800_1000,
+            },
+        ];
+
+        let interface_symbols = filter_loaded_symbols(symbols.clone(), None, Some("interface"));
+        assert_eq!(interface_symbols.len(), 1);
+        assert_eq!(
+            interface_symbols[0].name,
+            "runtime-string:interface:Source2Client002"
+        );
+
+        let signature_symbols = filter_loaded_symbols(symbols.clone(), Some("rip"), Some("sig"));
+        assert_eq!(signature_symbols.len(), 1);
+        assert_eq!(
+            signature_symbols[0].name,
+            "runtime-signature:rip_relative_load:0000"
+        );
+
+        assert!(filter_loaded_symbols(symbols, Some("missing"), None).is_empty());
     }
 
     #[test]
