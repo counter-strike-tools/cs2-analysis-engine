@@ -11,6 +11,7 @@ use engine::{
     detect_cs2_environment, disassemble, extract_ascii_strings, filter_loaded_symbols,
     filter_pattern_matches, fingerprint_detected_modules, load_symbol_map, load_symbols,
     parse_string_kind_name, parse_u64, run_signature_presets, scan_pattern,
+    summarize_runtime_symbols,
 };
 use serde::Serialize;
 
@@ -453,13 +454,43 @@ fn main() -> Result<()> {
             let findings = run_signature_presets(&image)?;
             let symbols = derive_runtime_symbols(&image, &strings, &findings);
             let total_symbols = symbols.len();
+            let total_summary = summarize_runtime_symbols(&symbols);
             let symbols = filter_loaded_symbols(symbols, contains.as_deref(), kind.as_deref());
+            let filtered_summary = summarize_runtime_symbols(&symbols);
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&symbols)?);
             } else {
                 println!("module: {}", module.display());
                 println!("runtime symbols: {} of {}", symbols.len(), total_symbols);
+                println!(
+                    "runtime breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
+                    filtered_summary.strings,
+                    filtered_summary.signatures,
+                    filtered_summary.interfaces,
+                    filtered_summary.schemas,
+                    filtered_summary.classes,
+                    filtered_summary.convars,
+                    filtered_summary.source_paths,
+                    filtered_summary.formats,
+                    filtered_summary.decorated,
+                    filtered_summary.other
+                );
+                if symbols.len() != total_symbols {
+                    println!(
+                        "total breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
+                        total_summary.strings,
+                        total_summary.signatures,
+                        total_summary.interfaces,
+                        total_summary.schemas,
+                        total_summary.classes,
+                        total_summary.convars,
+                        total_summary.source_paths,
+                        total_summary.formats,
+                        total_summary.decorated,
+                        total_summary.other
+                    );
+                }
                 println!("strings scanned: {}", strings.len());
                 println!(
                     "signature hits: {}",
@@ -615,6 +646,20 @@ fn format_workspace_report_text(report: &engine::WorkspaceReport) -> String {
     }
     lines.push(format!("symbols: {}", report.symbols.len()));
     lines.push(format!("runtime symbols: {}", report.runtime_symbols.len()));
+    let runtime_summary = summarize_runtime_symbols(&report.runtime_symbols);
+    lines.push(format!(
+        "runtime symbol breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
+        runtime_summary.strings,
+        runtime_summary.signatures,
+        runtime_summary.interfaces,
+        runtime_summary.schemas,
+        runtime_summary.classes,
+        runtime_summary.convars,
+        runtime_summary.source_paths,
+        runtime_summary.formats,
+        runtime_summary.decorated,
+        runtime_summary.other
+    ));
     lines.push(format!("disassembly rows: {}", report.disassembly.len()));
     lines.push(format!(
         "cross references: {}",
@@ -685,6 +730,12 @@ struct WorkspaceSummary {
     sections: usize,
     symbols: usize,
     runtime_symbols: usize,
+    runtime_string_symbols: usize,
+    runtime_signature_symbols: usize,
+    runtime_interface_symbols: usize,
+    runtime_schema_symbols: usize,
+    runtime_class_symbols: usize,
+    runtime_convar_symbols: usize,
     disassembly_rows: usize,
     cross_references: usize,
     strings: usize,
@@ -693,6 +744,7 @@ struct WorkspaceSummary {
 }
 
 fn build_workspace_summary(report: &engine::WorkspaceReport) -> WorkspaceSummary {
+    let runtime_summary = summarize_runtime_symbols(&report.runtime_symbols);
     WorkspaceSummary {
         health: report.health.clone(),
         selected_module: report
@@ -711,6 +763,12 @@ fn build_workspace_summary(report: &engine::WorkspaceReport) -> WorkspaceSummary
         sections: report.sections.len(),
         symbols: report.symbols.len(),
         runtime_symbols: report.runtime_symbols.len(),
+        runtime_string_symbols: runtime_summary.strings,
+        runtime_signature_symbols: runtime_summary.signatures,
+        runtime_interface_symbols: runtime_summary.interfaces,
+        runtime_schema_symbols: runtime_summary.schemas,
+        runtime_class_symbols: runtime_summary.classes,
+        runtime_convar_symbols: runtime_summary.convars,
         disassembly_rows: report.disassembly.len(),
         cross_references: report.cross_references.len(),
         strings: report.strings.len(),
@@ -754,6 +812,15 @@ fn format_workspace_summary_text(report: &engine::WorkspaceReport) -> String {
         summary.strings,
         summary.signature_groups,
         summary.signature_hits
+    ));
+    lines.push(format!(
+        "runtime symbols: strings={} signatures={} interfaces={} schemas={} classes={} convars={}",
+        summary.runtime_string_symbols,
+        summary.runtime_signature_symbols,
+        summary.runtime_interface_symbols,
+        summary.runtime_schema_symbols,
+        summary.runtime_class_symbols,
+        summary.runtime_convar_symbols
     ));
 
     lines.join("\n")

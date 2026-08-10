@@ -1098,6 +1098,21 @@ pub struct LoadedSymbol {
     pub value: u64,
 }
 
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct RuntimeSymbolSummary {
+    pub total: usize,
+    pub strings: usize,
+    pub signatures: usize,
+    pub interfaces: usize,
+    pub schemas: usize,
+    pub classes: usize,
+    pub convars: usize,
+    pub source_paths: usize,
+    pub formats: usize,
+    pub decorated: usize,
+    pub other: usize,
+}
+
 impl SymbolMap {
     pub fn insert(&mut self, value: u64, label: String) {
         self.symbols.entry(value).or_default().push(label);
@@ -1148,6 +1163,35 @@ pub fn filter_loaded_symbols(
                 .is_none_or(|kind| symbol.name.starts_with(kind))
         })
         .collect()
+}
+
+pub fn summarize_runtime_symbols(symbols: &[LoadedSymbol]) -> RuntimeSymbolSummary {
+    let mut summary = RuntimeSymbolSummary {
+        total: symbols.len(),
+        ..RuntimeSymbolSummary::default()
+    };
+
+    for symbol in symbols {
+        if let Some(rest) = symbol.name.strip_prefix("runtime-string:") {
+            summary.strings += 1;
+            match rest.split(':').next().unwrap_or_default() {
+                "interface" => summary.interfaces += 1,
+                "schema" => summary.schemas += 1,
+                "class" => summary.classes += 1,
+                "convar" => summary.convars += 1,
+                "source-path" => summary.source_paths += 1,
+                "format" => summary.formats += 1,
+                "decorated" => summary.decorated += 1,
+                _ => summary.other += 1,
+            }
+        } else if symbol.name.starts_with("runtime-signature:") {
+            summary.signatures += 1;
+        } else {
+            summary.other += 1;
+        }
+    }
+
+    summary
 }
 
 fn normalize_symbol_kind_prefix(input: &str) -> String {
@@ -1664,6 +1708,41 @@ mod tests {
         );
 
         assert!(filter_loaded_symbols(symbols, Some("missing"), None).is_empty());
+    }
+
+    #[test]
+    fn summarizes_runtime_symbols_by_source_and_string_kind() {
+        let symbols = vec![
+            LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-string:interface:Source2Client002".to_string(),
+                value: 0x1800_3000,
+            },
+            LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-string:schema:C_CSPlayerPawn".to_string(),
+                value: 0x1800_3010,
+            },
+            LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-string:convar:sv_cheats".to_string(),
+                value: 0x1800_3020,
+            },
+            LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-signature:rip_relative_load:0000".to_string(),
+                value: 0x1800_1000,
+            },
+        ];
+
+        let summary = summarize_runtime_symbols(&symbols);
+
+        assert_eq!(summary.total, 4);
+        assert_eq!(summary.strings, 3);
+        assert_eq!(summary.signatures, 1);
+        assert_eq!(summary.interfaces, 1);
+        assert_eq!(summary.schemas, 1);
+        assert_eq!(summary.convars, 1);
     }
 
     #[test]

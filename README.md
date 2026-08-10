@@ -91,6 +91,8 @@ cs2-analysis-engine runtime-symbols --kind interface --contains Source2
 cs2-analysis-engine runtime-symbols --kind signature --contains rip
 ```
 
+The runtime symbol dump prints a source/kind breakdown so filtered output can be compared with the full generated workspace.
+
 Save a workspace report:
 
 ```text
