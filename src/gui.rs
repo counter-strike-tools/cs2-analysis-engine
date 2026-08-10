@@ -4,10 +4,10 @@ use anyhow::Result;
 use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use crate::engine::{
-    CrossReference, Cs2Environment, DecodedInstruction, LoadedSymbol, ModuleImage, Pattern,
-    PatternMatch, SectionInfo, SignatureFinding, SymbolMap, detect_cs2_environment, disassemble,
-    extract_cross_references, load_symbol_map, load_symbols, parse_u64, run_signature_presets,
-    scan_pattern,
+    CrossReference, CrossReferenceTargetKind, Cs2Environment, DecodedInstruction, LoadedSymbol,
+    ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, SymbolMap,
+    detect_cs2_environment, disassemble, extract_cross_references, load_symbol_map, load_symbols,
+    parse_u64, run_signature_presets, scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -383,6 +383,23 @@ impl AnalysisApp {
                 ui.end_row();
                 self.summary_card(
                     ui,
+                    "Code/data xrefs",
+                    &format!(
+                        "{} code, {} data",
+                        self.cross_reference_kind_count(CrossReferenceTargetKind::Code),
+                        self.cross_reference_kind_count(CrossReferenceTargetKind::Data)
+                    ),
+                );
+                self.summary_card(
+                    ui,
+                    "Outside-image xrefs",
+                    &self
+                        .cross_reference_kind_count(CrossReferenceTargetKind::OutsideImage)
+                        .to_string(),
+                );
+                ui.end_row();
+                self.summary_card(
+                    ui,
                     "Signature groups",
                     &self.signature_findings.len().to_string(),
                 );
@@ -677,7 +694,8 @@ impl AnalysisApp {
                     Ok(instructions) => {
                         self.status = format!("Decoded {} instructions.", instructions.len());
                         self.instructions = instructions;
-                        self.cross_references = extract_cross_references(&self.instructions);
+                        self.cross_references =
+                            extract_cross_references(&self.instructions, &self.sections);
                         self.active_tab = Tab::ModuleMap;
                         self.build_disasm_output();
                     }
@@ -798,9 +816,11 @@ impl AnalysisApp {
         for xref in self.cross_references.iter().take(50) {
             writeln!(
                 &mut report,
-                "  {:#014x} -> {:#014x} {} {}",
+                "  {:#014x} -> {:#014x} {:<13} {:<12} {} {}",
                 xref.source,
                 xref.target,
+                format_cross_reference_kind(xref.target_kind),
+                xref.target_section.as_deref().unwrap_or("<no section>"),
                 xref.instruction,
                 xref.target_symbol.as_deref().unwrap_or("")
             )
@@ -994,6 +1014,13 @@ impl AnalysisApp {
             self.run_signature_findings();
         }
     }
+
+    fn cross_reference_kind_count(&self, kind: CrossReferenceTargetKind) -> usize {
+        self.cross_references
+            .iter()
+            .filter(|xref| xref.target_kind == kind)
+            .count()
+    }
 }
 
 fn format_instruction_target(instruction: &DecodedInstruction) -> String {
@@ -1002,5 +1029,13 @@ fn format_instruction_target(instruction: &DecodedInstruction) -> String {
         (Some(target), None) => format!("=> {target:#x}"),
         (None, Some(symbol)) => format!("=> {symbol}"),
         (None, None) => String::new(),
+    }
+}
+
+fn format_cross_reference_kind(kind: CrossReferenceTargetKind) -> &'static str {
+    match kind {
+        CrossReferenceTargetKind::Code => "code",
+        CrossReferenceTargetKind::Data => "data",
+        CrossReferenceTargetKind::OutsideImage => "outside-image",
     }
 }

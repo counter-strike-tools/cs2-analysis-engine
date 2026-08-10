@@ -58,6 +58,15 @@ pub struct CrossReference {
     pub target: u64,
     pub instruction: String,
     pub target_symbol: Option<String>,
+    pub target_section: Option<String>,
+    pub target_kind: CrossReferenceTargetKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum CrossReferenceTargetKind {
+    Code,
+    Data,
+    OutsideImage,
 }
 
 #[derive(Debug, Serialize)]
@@ -426,18 +435,46 @@ fn rip_relative_target(instruction: &Instruction) -> Option<u64> {
         .filter(|target| *target != 0)
 }
 
-pub fn extract_cross_references(instructions: &[DecodedInstruction]) -> Vec<CrossReference> {
+pub fn extract_cross_references(
+    instructions: &[DecodedInstruction],
+    sections: &[SectionInfo],
+) -> Vec<CrossReference> {
     instructions
         .iter()
         .filter_map(|instruction| {
-            instruction.rip_target.map(|target| CrossReference {
+            let target = instruction.rip_target?;
+            let (target_section, target_kind) = classify_cross_reference_target(sections, target);
+            Some(CrossReference {
                 source: instruction.address,
                 target,
                 instruction: instruction.text.clone(),
                 target_symbol: instruction.target_symbol.clone(),
+                target_section,
+                target_kind,
             })
         })
         .collect()
+}
+
+pub fn classify_cross_reference_target(
+    sections: &[SectionInfo],
+    target: u64,
+) -> (Option<String>, CrossReferenceTargetKind) {
+    let Some(section) = sections.iter().find(|section| {
+        let start = section.address;
+        let end = start.saturating_add(section.size);
+        target >= start && target < end
+    }) else {
+        return (None, CrossReferenceTargetKind::OutsideImage);
+    };
+
+    let kind = if section.executable {
+        CrossReferenceTargetKind::Code
+    } else {
+        CrossReferenceTargetKind::Data
+    };
+
+    (Some(section.name.clone()), kind)
 }
 
 #[derive(Debug, Clone)]
@@ -589,7 +626,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
             .or_else(|| sections.first())
         {
             disassembly = disassemble(&image, section.address, disasm_len, &symbol_map)?;
-            cross_references = extract_cross_references(&disassembly);
+            cross_references = extract_cross_references(&disassembly, &sections);
         }
         signature_findings = run_signature_presets(&image)?;
     }
@@ -706,5 +743,81 @@ pub fn parse_u64(input: &str) -> Result<u64> {
         input
             .parse::<u64>()
             .with_context(|| format!("invalid integer: {input}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_sections() -> Vec<SectionInfo> {
+        vec![
+            SectionInfo {
+                name: ".text".to_string(),
+                address: 0x1800_1000,
+                size: 0x100,
+                file_range: Some((0, 0x100)),
+                executable: true,
+            },
+            SectionInfo {
+                name: ".rdata".to_string(),
+                address: 0x1800_3000,
+                size: 0x80,
+                file_range: Some((0x200, 0x80)),
+                executable: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn classifies_cross_reference_targets_by_section_kind() {
+        let sections = test_sections();
+
+        assert_eq!(
+            classify_cross_reference_target(&sections, 0x1800_1010),
+            (Some(".text".to_string()), CrossReferenceTargetKind::Code)
+        );
+        assert_eq!(
+            classify_cross_reference_target(&sections, 0x1800_307f),
+            (Some(".rdata".to_string()), CrossReferenceTargetKind::Data)
+        );
+        assert_eq!(
+            classify_cross_reference_target(&sections, 0x1800_3080),
+            (None, CrossReferenceTargetKind::OutsideImage)
+        );
+    }
+
+    #[test]
+    fn extracts_only_targeted_cross_references_with_target_metadata() {
+        let instructions = vec![
+            DecodedInstruction {
+                address: 0x1800_1000,
+                bytes: "48 8B 05 00 20 00 00".to_string(),
+                text: "mov rax,[rel 18003007h]".to_string(),
+                symbol: None,
+                rip_target: Some(0x1800_3007),
+                target_symbol: Some("client.dll!offset:dwEntityList".to_string()),
+            },
+            DecodedInstruction {
+                address: 0x1800_1007,
+                bytes: "90".to_string(),
+                text: "nop".to_string(),
+                symbol: None,
+                rip_target: None,
+                target_symbol: None,
+            },
+        ];
+
+        let xrefs = extract_cross_references(&instructions, &test_sections());
+
+        assert_eq!(xrefs.len(), 1);
+        assert_eq!(xrefs[0].source, 0x1800_1000);
+        assert_eq!(xrefs[0].target, 0x1800_3007);
+        assert_eq!(xrefs[0].target_section.as_deref(), Some(".rdata"));
+        assert_eq!(xrefs[0].target_kind, CrossReferenceTargetKind::Data);
+        assert_eq!(
+            xrefs[0].target_symbol.as_deref(),
+            Some("client.dll!offset:dwEntityList")
+        );
     }
 }

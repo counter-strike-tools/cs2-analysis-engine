@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
-    ModuleImage, Pattern, build_auto_workspace_report, detect_cs2_environment, disassemble,
-    load_symbol_map, load_symbols, parse_u64, run_signature_presets, scan_pattern,
+    CrossReferenceTargetKind, ModuleImage, Pattern, build_auto_workspace_report,
+    detect_cs2_environment, disassemble, load_symbol_map, load_symbols, parse_u64,
+    run_signature_presets, scan_pattern,
 };
 
 #[derive(Parser)]
@@ -177,6 +178,24 @@ fn main() -> Result<()> {
                 println!("symbols: {}", report.symbols.len());
                 println!("disassembly rows: {}", report.disassembly.len());
                 println!("cross references: {}", report.cross_references.len());
+                println!(
+                    "xref targets: {} code, {} data, {} outside-image",
+                    report
+                        .cross_references
+                        .iter()
+                        .filter(|xref| xref.target_kind == CrossReferenceTargetKind::Code)
+                        .count(),
+                    report
+                        .cross_references
+                        .iter()
+                        .filter(|xref| xref.target_kind == CrossReferenceTargetKind::Data)
+                        .count(),
+                    report
+                        .cross_references
+                        .iter()
+                        .filter(|xref| xref.target_kind == CrossReferenceTargetKind::OutsideImage)
+                        .count()
+                );
                 let signature_hits = report
                     .signature_findings
                     .iter()
