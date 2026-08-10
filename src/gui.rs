@@ -7,8 +7,9 @@ use crate::engine::{
     CrossReference, CrossReferenceTargetKind, Cs2Environment, DecodedInstruction, LoadedSymbol,
     ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, StringKind, StringReference,
     SymbolMap, annotate_pattern_matches_with_strings, detect_cs2_environment, disassemble,
-    extract_ascii_strings, extract_cross_references, filter_pattern_matches, load_symbol_map,
-    load_symbols, parse_string_kind_name, parse_u64, run_signature_presets, scan_pattern,
+    extract_ascii_strings, extract_cross_references, filter_pattern_matches,
+    fingerprint_detected_modules, load_symbol_map, load_symbols, parse_string_kind_name, parse_u64,
+    run_signature_presets, scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -379,6 +380,21 @@ impl AnalysisApp {
                     ),
                 );
                 self.summary_card(ui, "Disassembly rows", &self.instructions.len().to_string());
+                ui.end_row();
+                self.summary_card(
+                    ui,
+                    "Module inventory",
+                    &fingerprint_detected_modules(&self.env).len().to_string(),
+                );
+                self.summary_card(
+                    ui,
+                    "Loaded SHA-256",
+                    self.module
+                        .as_ref()
+                        .map(|module| module.fingerprint().sha256)
+                        .unwrap_or_else(|| "No module loaded".to_string())
+                        .as_str(),
+                );
                 ui.end_row();
                 self.summary_card(
                     ui,
@@ -925,6 +941,20 @@ impl AnalysisApp {
         .ok();
         for root in &self.env.install_roots {
             writeln!(&mut report, "  {}", root.display()).ok();
+        }
+        let module_inventory = fingerprint_detected_modules(&self.env);
+        writeln!(&mut report, "module inventory: {}", module_inventory.len()).ok();
+        for item in &module_inventory {
+            writeln!(
+                &mut report,
+                "  {:<18} size={:<10} base={:#x} sha256={} {}",
+                item.file_name,
+                item.size,
+                item.image_base,
+                item.sha256,
+                item.path.display()
+            )
+            .ok();
         }
 
         if let Some(module) = &self.module {

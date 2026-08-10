@@ -109,6 +109,7 @@ pub struct WorkspaceReport {
     pub selected_module: Option<PathBuf>,
     pub selected_dump: Option<PathBuf>,
     pub module_fingerprint: Option<ModuleFingerprint>,
+    pub module_inventory: Vec<ModuleFingerprint>,
     pub sections: Vec<SectionInfo>,
     pub symbols: Vec<LoadedSymbol>,
     pub disassembly: Vec<DecodedInstruction>,
@@ -198,6 +199,18 @@ pub fn detect_cs2_environment() -> Cs2Environment {
         module_candidates,
         dump_candidates,
     }
+}
+
+pub fn fingerprint_detected_modules(environment: &Cs2Environment) -> Vec<ModuleFingerprint> {
+    environment
+        .module_candidates
+        .iter()
+        .filter_map(|path| {
+            ModuleImage::load(path)
+                .ok()
+                .map(|image| image.fingerprint())
+        })
+        .collect()
 }
 
 fn find_steam_cs2_roots() -> Vec<PathBuf> {
@@ -919,6 +932,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
     let environment = detect_cs2_environment();
     let selected_module = select_best_module(&environment.module_candidates).cloned();
     let selected_dump = environment.dump_candidates.first().cloned();
+    let module_inventory = fingerprint_detected_modules(&environment);
 
     let mut sections = Vec::new();
     let mut disassembly = Vec::new();
@@ -955,6 +969,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
         selected_module,
         selected_dump,
         module_fingerprint,
+        module_inventory,
         sections,
         symbols,
         disassembly,
@@ -1328,5 +1343,17 @@ mod tests {
             sha256_hex(b"cs2"),
             "27321e07197e4d90d196e8ddec937344e6c7803f1d203d2e564eb3185e8b1ce1"
         );
+    }
+
+    #[test]
+    fn fingerprints_no_modules_for_empty_environment() {
+        let environment = Cs2Environment {
+            processes: Vec::new(),
+            install_roots: Vec::new(),
+            module_candidates: Vec::new(),
+            dump_candidates: Vec::new(),
+        };
+
+        assert!(fingerprint_detected_modules(&environment).is_empty());
     }
 }

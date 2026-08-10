@@ -8,8 +8,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
     CrossReferenceTargetKind, ModuleImage, Pattern, PatternMatch, StringKind,
     annotate_pattern_matches_with_strings, build_auto_workspace_report, detect_cs2_environment,
-    disassemble, extract_ascii_strings, filter_pattern_matches, load_symbol_map, load_symbols,
-    parse_string_kind_name, parse_u64, run_signature_presets, scan_pattern,
+    disassemble, extract_ascii_strings, filter_pattern_matches, fingerprint_detected_modules,
+    load_symbol_map, load_symbols, parse_string_kind_name, parse_u64, run_signature_presets,
+    scan_pattern,
 };
 
 #[derive(Parser)]
@@ -50,6 +51,12 @@ enum Command {
     Fingerprint {
         /// Path to a module file such as client.dll.
         module: PathBuf,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fingerprint all auto-detected CS2 module candidates.
+    Inventory {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -217,6 +224,13 @@ fn main() -> Result<()> {
                     );
                     println!("module sha256: {}", fingerprint.sha256);
                 }
+                println!("module inventory: {}", report.module_inventory.len());
+                for item in &report.module_inventory {
+                    println!(
+                        "  {:<18} size={:<10} base={:#x} sha256={}",
+                        item.file_name, item.size, item.image_base, item.sha256
+                    );
+                }
                 println!("symbols: {}", report.symbols.len());
                 println!("disassembly rows: {}", report.disassembly.len());
                 println!("cross references: {}", report.cross_references.len());
@@ -309,6 +323,29 @@ fn main() -> Result<()> {
                 println!("size: {}", fingerprint.size);
                 println!("image base: {:#x}", fingerprint.image_base);
                 println!("sha256: {}", fingerprint.sha256);
+            }
+
+            Ok(())
+        }
+        Command::Inventory { json } => {
+            let environment = detect_cs2_environment();
+            let inventory = fingerprint_detected_modules(&environment);
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&inventory)?);
+            } else if inventory.is_empty() {
+                println!("no detected module candidates");
+            } else {
+                for item in inventory {
+                    println!(
+                        "{:<18} size={:<10} base={:#x} sha256={} {}",
+                        item.file_name,
+                        item.size,
+                        item.image_base,
+                        item.sha256,
+                        item.path.display()
+                    );
+                }
             }
 
             Ok(())
