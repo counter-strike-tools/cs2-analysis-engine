@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use iced_x86::{Decoder, DecoderOptions, Formatter, Instruction, NasmFormatter};
 use object::{Object, ObjectSection};
 use serde::Serialize;
+use sysinfo::System;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SectionInfo {
@@ -37,11 +38,134 @@ pub struct SymbolMap {
     pub symbols: BTreeMap<u64, Vec<String>>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct Cs2Environment {
+    pub processes: Vec<Cs2Process>,
+    pub install_roots: Vec<PathBuf>,
+    pub module_candidates: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Cs2Process {
+    pub pid: String,
+    pub name: String,
+    pub exe: Option<PathBuf>,
+}
+
 pub struct ModuleImage {
     pub path: PathBuf,
     pub base: u64,
     bytes: Vec<u8>,
     file: object::File<'static>,
+}
+
+pub fn detect_cs2_environment() -> Cs2Environment {
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let mut processes = Vec::new();
+    for (pid, process) in system.processes() {
+        let name = process.name().to_string_lossy().to_string();
+        let lower = name.to_ascii_lowercase();
+        if lower == "cs2.exe" || lower == "steam.exe" {
+            processes.push(Cs2Process {
+                pid: pid.to_string(),
+                name,
+                exe: process.exe().map(Path::to_path_buf),
+            });
+        }
+    }
+
+    processes.sort_by(|a, b| a.name.cmp(&b.name).then(a.pid.cmp(&b.pid)));
+
+    let install_roots = find_steam_cs2_roots();
+    let module_candidates = find_cs2_module_candidates(&install_roots);
+
+    Cs2Environment {
+        processes,
+        install_roots,
+        module_candidates,
+    }
+}
+
+fn find_steam_cs2_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut steam_roots = Vec::new();
+
+    for key in ["ProgramFiles(x86)", "ProgramFiles"] {
+        if let Ok(value) = env::var(key) {
+            steam_roots.push(PathBuf::from(value).join("Steam"));
+        }
+    }
+
+    if let Ok(value) = env::var("STEAM_DIR") {
+        steam_roots.push(PathBuf::from(value));
+    }
+
+    let mut library_roots = steam_roots.clone();
+    for steam_root in &steam_roots {
+        library_roots.extend(parse_steam_library_folders(steam_root));
+    }
+
+    for library_root in library_roots {
+        let candidate = library_root
+            .join("steamapps")
+            .join("common")
+            .join("Counter-Strike Global Offensive");
+        if candidate.exists() && !roots.contains(&candidate) {
+            roots.push(candidate);
+        }
+    }
+
+    roots
+}
+
+fn parse_steam_library_folders(steam_root: &Path) -> Vec<PathBuf> {
+    let path = steam_root.join("steamapps").join("libraryfolders.vdf");
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+
+    contents
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("\"path\"") {
+                return None;
+            }
+
+            let parts = trimmed.split('"').collect::<Vec<_>>();
+            parts
+                .get(3)
+                .map(|value| PathBuf::from(value.replace("\\\\", "\\")))
+        })
+        .collect()
+}
+
+fn find_cs2_module_candidates(install_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let relative_modules = [
+        ["game", "csgo", "bin", "win64", "client.dll"].as_slice(),
+        ["game", "bin", "win64", "engine2.dll"].as_slice(),
+        ["game", "bin", "win64", "schemasystem.dll"].as_slice(),
+        ["game", "bin", "win64", "tier0.dll"].as_slice(),
+        ["game", "bin", "win64", "vstdlib.dll"].as_slice(),
+    ];
+
+    let mut modules = Vec::new();
+    for root in install_roots {
+        for parts in relative_modules {
+            let mut path = root.clone();
+            for part in parts {
+                path.push(part);
+            }
+
+            if path.exists() && !modules.contains(&path) {
+                modules.push(path);
+            }
+        }
+    }
+
+    modules
 }
 
 impl ModuleImage {

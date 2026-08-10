@@ -4,8 +4,9 @@ use anyhow::Result;
 use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use crate::engine::{
-    DecodedInstruction, LoadedSymbol, ModuleImage, Pattern, PatternMatch, SectionInfo, SymbolMap,
-    disassemble, load_symbol_map, load_symbols, parse_u64, scan_pattern,
+    Cs2Environment, DecodedInstruction, LoadedSymbol, ModuleImage, Pattern, PatternMatch,
+    SectionInfo, SymbolMap, detect_cs2_environment, disassemble, load_symbol_map, load_symbols,
+    parse_u64, scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -40,8 +41,8 @@ fn configure_style(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-#[derive(Default)]
 struct AnalysisApp {
+    env: Cs2Environment,
     module_path: String,
     dump_path: String,
     module: Option<ModuleImage>,
@@ -63,10 +64,35 @@ struct AnalysisApp {
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     #[default]
-    Disassembly,
-    Scanner,
-    Symbols,
+    Overview,
+    ModuleMap,
+    Signatures,
+    DumperData,
     Report,
+}
+
+impl Default for AnalysisApp {
+    fn default() -> Self {
+        Self {
+            env: detect_cs2_environment(),
+            module_path: String::new(),
+            dump_path: String::new(),
+            module: None,
+            sections: Vec::new(),
+            symbols: Vec::new(),
+            symbol_map: SymbolMap::default(),
+            selected_section: None,
+            disasm_start: String::new(),
+            disasm_len: "256".to_string(),
+            disasm_is_rva: false,
+            scan_pattern_text: String::new(),
+            instructions: Vec::new(),
+            scan_matches: Vec::new(),
+            status: String::new(),
+            output: String::new(),
+            active_tab: Tab::Overview,
+        }
+    }
 }
 
 impl eframe::App for AnalysisApp {
@@ -87,7 +113,7 @@ impl eframe::App for AnalysisApp {
                 );
                 ui.separator();
                 ui.label(if self.status.is_empty() {
-                    "Load a CS2 module file or any PE file to begin."
+                    "Static CS2 workspace. Detects context, analyzes files, and never attaches to the live game."
                 } else {
                     &self.status
                 });
@@ -102,13 +128,21 @@ impl AnalysisApp {
         ui.horizontal_wrapped(|ui| {
             ui.heading("CS2 Analysis Engine");
             ui.separator();
-            ui.label("offline disassembler, scanner, and cs2-dumper metadata explorer");
+            ui.label("CS2 workspace, module intelligence, signatures, dumper data");
         });
         ui.add_space(4.0);
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Workspace");
+        ui.heading("CS2 workspace");
+        if ui.button("Refresh CS2 context").clicked() {
+            self.refresh_environment();
+        }
+
+        ui.add_space(10.0);
+        self.cs2_context_card(ui);
+
+        ui.add_space(16.0);
         ui.label("Module file");
         ui.horizontal(|ui| {
             ui.add(TextEdit::singleline(&mut self.module_path).hint_text("client.dll"));
@@ -145,7 +179,7 @@ impl AnalysisApp {
         self.module_summary(ui);
 
         ui.add_space(18.0);
-        ui.heading("Sections");
+        ui.heading("Module sections");
         egui::ScrollArea::vertical()
             .id_salt("sections")
             .max_height(320.0)
@@ -174,6 +208,58 @@ impl AnalysisApp {
             });
     }
 
+    fn cs2_context_card(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(RichText::new("Detected context").strong());
+            ui.horizontal(|ui| {
+                ui.label("Processes:");
+                ui.label(self.env.processes.len().to_string());
+                ui.separator();
+                ui.label("Installs:");
+                ui.label(self.env.install_roots.len().to_string());
+                ui.separator();
+                ui.label("Modules:");
+                ui.label(self.env.module_candidates.len().to_string());
+            });
+
+            if self.env.processes.is_empty() {
+                ui.label(
+                    RichText::new("CS2 is not currently visible in the process list.")
+                        .color(Color32::GRAY),
+                );
+            } else {
+                for process in &self.env.processes {
+                    ui.monospace(format!(
+                        "{} pid={} {}",
+                        process.name,
+                        process.pid,
+                        process
+                            .exe
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<path unavailable>".to_string())
+                    ));
+                }
+            }
+
+            if !self.env.module_candidates.is_empty() {
+                ui.separator();
+                ui.label("Quick-load module");
+                let module_candidates = self.env.module_candidates.clone();
+                for module in module_candidates.iter().take(5) {
+                    let file_name = module
+                        .file_name()
+                        .map(|value| value.to_string_lossy().to_string())
+                        .unwrap_or_else(|| module.display().to_string());
+                    if ui.button(file_name).clicked() {
+                        self.module_path = module.display().to_string();
+                        self.load_module();
+                    }
+                }
+            }
+        });
+    }
+
     fn module_summary(&self, ui: &mut egui::Ui) {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.label(RichText::new("Analysis scope").strong());
@@ -191,17 +277,19 @@ impl AnalysisApp {
 
     fn main_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            self.tab_button(ui, Tab::Disassembly, "Disassembly");
-            self.tab_button(ui, Tab::Scanner, "Pattern scanner");
-            self.tab_button(ui, Tab::Symbols, "Symbols");
+            self.tab_button(ui, Tab::Overview, "Overview");
+            self.tab_button(ui, Tab::ModuleMap, "Module map");
+            self.tab_button(ui, Tab::Signatures, "Signatures");
+            self.tab_button(ui, Tab::DumperData, "Dumper data");
             self.tab_button(ui, Tab::Report, "Report");
         });
         ui.separator();
 
         match self.active_tab {
-            Tab::Disassembly => self.disassembly_tab(ui),
-            Tab::Scanner => self.scanner_tab(ui),
-            Tab::Symbols => self.symbols_tab(ui),
+            Tab::Overview => self.overview_tab(ui),
+            Tab::ModuleMap => self.module_map_tab(ui),
+            Tab::Signatures => self.signatures_tab(ui),
+            Tab::DumperData => self.dumper_data_tab(ui),
             Tab::Report => self.report_tab(ui),
         }
     }
@@ -212,7 +300,71 @@ impl AnalysisApp {
         }
     }
 
-    fn disassembly_tab(&mut self, ui: &mut egui::Ui) {
+    fn overview_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("CS2 analysis dashboard");
+        ui.label("Start from a detected install/module, load dumper output, then scan or inspect only the files you choose.");
+        ui.add_space(14.0);
+
+        egui::Grid::new("overview_cards")
+            .num_columns(2)
+            .spacing([16.0, 16.0])
+            .show(ui, |ui| {
+                self.summary_card(
+                    ui,
+                    "Runtime context",
+                    &format!(
+                        "{} process entries, {} install roots",
+                        self.env.processes.len(),
+                        self.env.install_roots.len()
+                    ),
+                );
+                self.summary_card(
+                    ui,
+                    "Loaded module",
+                    self.module
+                        .as_ref()
+                        .map(|module| module.path.display().to_string())
+                        .unwrap_or_else(|| "No module loaded".to_string())
+                        .as_str(),
+                );
+                ui.end_row();
+                self.summary_card(ui, "Sections", &self.sections.len().to_string());
+                self.summary_card(ui, "Dumper symbols", &self.symbols.len().to_string());
+                ui.end_row();
+            });
+
+        ui.add_space(18.0);
+        ui.heading("Recommended next actions");
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Load detected client.dll").clicked() {
+                self.load_first_named_module("client.dll");
+            }
+            if ui.button("Load detected engine2.dll").clicked() {
+                self.load_first_named_module("engine2.dll");
+            }
+            if ui.button("Disassemble entry section").clicked() {
+                self.run_disassembly();
+            }
+            if ui.button("Build report").clicked() {
+                self.build_report();
+                self.active_tab = Tab::Report;
+            }
+        });
+    }
+
+    fn summary_card(&self, ui: &mut egui::Ui, title: &str, value: &str) {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_min_size(egui::vec2(280.0, 92.0));
+            ui.label(
+                RichText::new(title)
+                    .color(Color32::from_rgb(124, 255, 178))
+                    .strong(),
+            );
+            ui.label(value);
+        });
+    }
+
+    fn module_map_tab(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Start");
             ui.add_sized([150.0, 24.0], TextEdit::singleline(&mut self.disasm_start));
@@ -228,9 +380,10 @@ impl AnalysisApp {
         });
 
         ui.add_space(8.0);
+        ui.heading("Disassembly");
         egui::ScrollArea::both().id_salt("disasm").show(ui, |ui| {
             if self.instructions.is_empty() {
-                ui.label("Disassembly results will appear here.");
+                ui.label("Choose a section or address, then disassemble. This reads module bytes from disk only.");
                 return;
             }
 
@@ -255,7 +408,7 @@ impl AnalysisApp {
         });
     }
 
-    fn scanner_tab(&mut self, ui: &mut egui::Ui) {
+    fn signatures_tab(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Pattern");
             ui.add_sized(
@@ -271,6 +424,9 @@ impl AnalysisApp {
         });
 
         ui.add_space(8.0);
+        ui.label(
+            "Scans the loaded module file by section and reports RVAs/VAs. Wildcards use ? or ??.",
+        );
         egui::ScrollArea::both().id_salt("scan").show(ui, |ui| {
             if self.scan_matches.is_empty() {
                 ui.label("Pattern matches will appear here.");
@@ -294,7 +450,7 @@ impl AnalysisApp {
         });
     }
 
-    fn symbols_tab(&mut self, ui: &mut egui::Ui) {
+    fn dumper_data_tab(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label(format!("Loaded symbols: {}", self.symbols.len()));
             if ui.button("Copy symbols").clicked() {
@@ -305,7 +461,9 @@ impl AnalysisApp {
 
         egui::ScrollArea::both().id_salt("symbols").show(ui, |ui| {
             if self.symbols.is_empty() {
-                ui.label("Load a cs2-dumper output folder to view symbols.");
+                ui.label(
+                    "Load a cs2-dumper output folder to view offsets, buttons, and interfaces.",
+                );
                 return;
             }
 
@@ -371,6 +529,7 @@ impl AnalysisApp {
                     self.instructions.clear();
                     self.scan_matches.clear();
                     self.build_report();
+                    self.active_tab = Tab::ModuleMap;
                 }
                 Err(err) => self.set_error(err),
             },
@@ -385,7 +544,7 @@ impl AnalysisApp {
                 self.status = format!("Loaded {} symbols.", symbols.len());
                 self.symbols = symbols;
                 self.symbol_map = symbol_map;
-                self.active_tab = Tab::Symbols;
+                self.active_tab = Tab::DumperData;
                 self.build_symbol_output();
             }
             (Err(err), _) | (_, Err(err)) => self.set_error(err),
@@ -417,7 +576,7 @@ impl AnalysisApp {
                     Ok(instructions) => {
                         self.status = format!("Decoded {} instructions.", instructions.len());
                         self.instructions = instructions;
-                        self.active_tab = Tab::Disassembly;
+                        self.active_tab = Tab::ModuleMap;
                         self.build_disasm_output();
                     }
                     Err(err) => self.set_error(err),
@@ -437,7 +596,7 @@ impl AnalysisApp {
             Ok(pattern) => {
                 self.scan_matches = scan_pattern(module, &pattern);
                 self.status = format!("Found {} matches.", self.scan_matches.len());
-                self.active_tab = Tab::Scanner;
+                self.active_tab = Tab::Signatures;
                 self.build_scan_output();
             }
             Err(err) => self.set_error(err),
@@ -448,6 +607,35 @@ impl AnalysisApp {
         let mut report = String::new();
         writeln!(&mut report, "CS2 Analysis Engine report").ok();
         writeln!(&mut report, "scope: read-only offline analysis").ok();
+        writeln!(
+            &mut report,
+            "detected processes: {}",
+            self.env.processes.len()
+        )
+        .ok();
+        for process in &self.env.processes {
+            writeln!(
+                &mut report,
+                "  {} pid={} {}",
+                process.name,
+                process.pid,
+                process
+                    .exe
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<path unavailable>".to_string())
+            )
+            .ok();
+        }
+        writeln!(
+            &mut report,
+            "detected install roots: {}",
+            self.env.install_roots.len()
+        )
+        .ok();
+        for root in &self.env.install_roots {
+            writeln!(&mut report, "  {}", root.display()).ok();
+        }
 
         if let Some(module) = &self.module {
             writeln!(&mut report, "module: {}", module.path.display()).ok();
@@ -527,5 +715,28 @@ impl AnalysisApp {
 
     fn set_error(&mut self, err: anyhow::Error) {
         self.status = format!("Error: {err:#}");
+    }
+
+    fn refresh_environment(&mut self) {
+        self.env = detect_cs2_environment();
+        self.status = format!(
+            "Refreshed CS2 context: {} processes, {} install roots, {} module candidates.",
+            self.env.processes.len(),
+            self.env.install_roots.len(),
+            self.env.module_candidates.len()
+        );
+    }
+
+    fn load_first_named_module(&mut self, name: &str) {
+        let Some(path) = self.env.module_candidates.iter().find(|path| {
+            path.file_name()
+                .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+        }) else {
+            self.status = format!("No detected {name}. Use Browse to select it manually.");
+            return;
+        };
+
+        self.module_path = path.display().to_string();
+        self.load_module();
     }
 }
