@@ -159,6 +159,9 @@ enum Command {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+        /// Write the generated symbol dump to a file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Run built-in offline signature finders against a module.
     Signatures {
@@ -445,6 +448,7 @@ fn main() -> Result<()> {
             contains,
             kind,
             json,
+            out,
         } => {
             let module = module
                 .or_else(auto_selected_module)
@@ -458,56 +462,29 @@ fn main() -> Result<()> {
             let symbols = filter_loaded_symbols(symbols, contains.as_deref(), kind.as_deref());
             let filtered_summary = summarize_runtime_symbols(&symbols);
 
-            if json {
-                println!("{}", serde_json::to_string_pretty(&symbols)?);
+            let output = if json {
+                serde_json::to_string_pretty(&symbols)?
             } else {
-                println!("module: {}", module.display());
-                println!("runtime symbols: {} of {}", symbols.len(), total_symbols);
-                println!(
-                    "runtime breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
-                    filtered_summary.strings,
-                    filtered_summary.signatures,
-                    filtered_summary.interfaces,
-                    filtered_summary.schemas,
-                    filtered_summary.classes,
-                    filtered_summary.convars,
-                    filtered_summary.source_paths,
-                    filtered_summary.formats,
-                    filtered_summary.decorated,
-                    filtered_summary.other
-                );
-                if symbols.len() != total_symbols {
-                    println!(
-                        "total breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
-                        total_summary.strings,
-                        total_summary.signatures,
-                        total_summary.interfaces,
-                        total_summary.schemas,
-                        total_summary.classes,
-                        total_summary.convars,
-                        total_summary.source_paths,
-                        total_summary.formats,
-                        total_summary.decorated,
-                        total_summary.other
-                    );
-                }
-                println!("strings scanned: {}", strings.len());
-                println!(
-                    "signature hits: {}",
-                    findings
+                format_runtime_symbols_text(RuntimeSymbolsText {
+                    module: &module,
+                    symbols: &symbols,
+                    total_symbols,
+                    filtered_summary: &filtered_summary,
+                    total_summary: &total_summary,
+                    strings_scanned: strings.len(),
+                    signature_hits: findings
                         .iter()
                         .map(|finding| finding.matches.len())
-                        .sum::<usize>()
-                );
-                for symbol in symbols.iter().take(limit) {
-                    println!(
-                        "{:<18} {:#014x} {}",
-                        symbol.module, symbol.value, symbol.name
-                    );
-                }
-                if symbols.len() > limit {
-                    println!("... {} more symbols", symbols.len() - limit);
-                }
+                        .sum::<usize>(),
+                    limit,
+                })
+            };
+
+            if let Some(path) = out {
+                write_report_file(&path, &output)?;
+                println!("wrote runtime symbol dump: {}", path.display());
+            } else {
+                println!("{output}");
             }
 
             Ok(())
@@ -567,6 +544,72 @@ fn auto_selected_module() -> Option<PathBuf> {
         })
         .cloned()
         .or_else(|| env.module_candidates.first().cloned())
+}
+
+struct RuntimeSymbolsText<'a> {
+    module: &'a PathBuf,
+    symbols: &'a [engine::LoadedSymbol],
+    total_symbols: usize,
+    filtered_summary: &'a engine::RuntimeSymbolSummary,
+    total_summary: &'a engine::RuntimeSymbolSummary,
+    strings_scanned: usize,
+    signature_hits: usize,
+    limit: usize,
+}
+
+fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("module: {}", input.module.display()));
+    lines.push(format!(
+        "runtime symbols: {} of {}",
+        input.symbols.len(),
+        input.total_symbols
+    ));
+    lines.push(format!(
+        "runtime breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
+        input.filtered_summary.strings,
+        input.filtered_summary.signatures,
+        input.filtered_summary.interfaces,
+        input.filtered_summary.schemas,
+        input.filtered_summary.classes,
+        input.filtered_summary.convars,
+        input.filtered_summary.source_paths,
+        input.filtered_summary.formats,
+        input.filtered_summary.decorated,
+        input.filtered_summary.other
+    ));
+    if input.symbols.len() != input.total_symbols {
+        lines.push(format!(
+            "total breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
+            input.total_summary.strings,
+            input.total_summary.signatures,
+            input.total_summary.interfaces,
+            input.total_summary.schemas,
+            input.total_summary.classes,
+            input.total_summary.convars,
+            input.total_summary.source_paths,
+            input.total_summary.formats,
+            input.total_summary.decorated,
+            input.total_summary.other
+        ));
+    }
+    lines.push(format!("strings scanned: {}", input.strings_scanned));
+    lines.push(format!("signature hits: {}", input.signature_hits));
+
+    for symbol in input.symbols.iter().take(input.limit) {
+        lines.push(format!(
+            "{:<18} {:#014x} {}",
+            symbol.module, symbol.value, symbol.name
+        ));
+    }
+    if input.symbols.len() > input.limit {
+        lines.push(format!(
+            "... {} more symbols",
+            input.symbols.len() - input.limit
+        ));
+    }
+
+    lines.join("\n")
 }
 
 fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String {
