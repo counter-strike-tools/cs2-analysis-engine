@@ -46,6 +46,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print stable identity metadata for a module file.
+    Fingerprint {
+        /// Path to a module file such as client.dll.
+        module: PathBuf,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Disassemble a virtual-address range from a module file.
     Disasm {
         /// Path to a module file such as client.dll.
@@ -202,6 +210,13 @@ fn main() -> Result<()> {
                         .unwrap_or_else(|| "<none>".to_string())
                 );
                 println!("sections: {}", report.sections.len());
+                if let Some(fingerprint) = &report.module_fingerprint {
+                    println!(
+                        "module fingerprint: {} size={} base={:#x}",
+                        fingerprint.file_name, fingerprint.size, fingerprint.image_base
+                    );
+                    println!("module sha256: {}", fingerprint.sha256);
+                }
                 println!("symbols: {}", report.symbols.len());
                 println!("disassembly rows: {}", report.disassembly.len());
                 println!("cross references: {}", report.cross_references.len());
@@ -278,6 +293,22 @@ fn main() -> Result<()> {
                         section.name, section.address, section.size, kind
                     );
                 }
+            }
+
+            Ok(())
+        }
+        Command::Fingerprint { module, json } => {
+            let image = ModuleImage::load(&module)?;
+            let fingerprint = image.fingerprint();
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&fingerprint)?);
+            } else {
+                println!("module: {}", fingerprint.path.display());
+                println!("file: {}", fingerprint.file_name);
+                println!("size: {}", fingerprint.size);
+                println!("image base: {:#x}", fingerprint.image_base);
+                println!("sha256: {}", fingerprint.sha256);
             }
 
             Ok(())

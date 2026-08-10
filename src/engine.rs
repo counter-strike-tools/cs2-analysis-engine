@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use iced_x86::{Decoder, DecoderOptions, Formatter, Instruction, NasmFormatter, Register};
 use object::{Object, ObjectSection};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use sysinfo::System;
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,12 +108,22 @@ pub struct WorkspaceReport {
     pub environment: Cs2Environment,
     pub selected_module: Option<PathBuf>,
     pub selected_dump: Option<PathBuf>,
+    pub module_fingerprint: Option<ModuleFingerprint>,
     pub sections: Vec<SectionInfo>,
     pub symbols: Vec<LoadedSymbol>,
     pub disassembly: Vec<DecodedInstruction>,
     pub cross_references: Vec<CrossReference>,
     pub strings: Vec<StringReference>,
     pub signature_findings: Vec<SignatureFinding>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModuleFingerprint {
+    pub path: PathBuf,
+    pub file_name: String,
+    pub size: u64,
+    pub image_base: u64,
+    pub sha256: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -397,6 +408,20 @@ impl ModuleImage {
             .collect()
     }
 
+    pub fn fingerprint(&self) -> ModuleFingerprint {
+        ModuleFingerprint {
+            path: self.path.clone(),
+            file_name: self
+                .path
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| self.path.display().to_string()),
+            size: self.bytes.len() as u64,
+            image_base: self.base,
+            sha256: sha256_hex(&self.bytes),
+        }
+    }
+
     fn bytes_at_va(&self, va: u64, len: u64) -> Result<&[u8]> {
         let rva = va
             .checked_sub(self.base)
@@ -422,6 +447,12 @@ impl ModuleImage {
 
         bail!("address {va:#x} does not map to a section")
     }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 pub fn disassemble(
@@ -894,6 +925,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
     let mut cross_references = Vec::new();
     let mut signature_findings = Vec::new();
     let mut strings = Vec::new();
+    let mut module_fingerprint = None;
     let mut symbols = Vec::new();
     let mut symbol_map = SymbolMap::default();
 
@@ -904,6 +936,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
 
     if let Some(module_path) = &selected_module {
         let image = ModuleImage::load(module_path)?;
+        module_fingerprint = Some(image.fingerprint());
         sections = image.sections()?;
         if let Some(section) = sections
             .iter()
@@ -921,6 +954,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
         environment,
         selected_module,
         selected_dump,
+        module_fingerprint,
         sections,
         symbols,
         disassembly,
@@ -1282,5 +1316,17 @@ mod tests {
             Some(StringKind::DecoratedSymbol)
         );
         assert_eq!(parse_string_kind_name("not-a-kind"), None);
+    }
+
+    #[test]
+    fn formats_sha256_as_lowercase_hex() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"cs2"),
+            "27321e07197e4d90d196e8ddec937344e6c7803f1d203d2e564eb3185e8b1ce1"
+        );
     }
 }

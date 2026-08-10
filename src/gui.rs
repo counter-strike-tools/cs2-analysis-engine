@@ -299,8 +299,11 @@ impl AnalysisApp {
             ui.label("Static files only. No process attach. No memory writes. No injection.");
 
             if let Some(module) = &self.module {
+                let fingerprint = module.fingerprint();
                 ui.separator();
                 ui.monospace(format!("base: {:#x}", module.base));
+                ui.monospace(format!("size: {} bytes", fingerprint.size));
+                ui.monospace(format!("sha256: {}", fingerprint.sha256));
                 ui.monospace(format!("file: {}", module.path.display()));
                 ui.monospace(format!("sections: {}", self.sections.len()));
                 ui.monospace(format!("symbols: {}", self.symbols.len()));
@@ -925,8 +928,11 @@ impl AnalysisApp {
         }
 
         if let Some(module) = &self.module {
+            let fingerprint = module.fingerprint();
             writeln!(&mut report, "module: {}", module.path.display()).ok();
             writeln!(&mut report, "base: {:#x}", module.base).ok();
+            writeln!(&mut report, "module size: {}", fingerprint.size).ok();
+            writeln!(&mut report, "module sha256: {}", fingerprint.sha256).ok();
         }
 
         writeln!(&mut report, "sections: {}", self.sections.len()).ok();

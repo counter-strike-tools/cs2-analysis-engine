@@ -9,6 +9,7 @@ anti-cheat, inject code, or automate gameplay.
 
 - Desktop GUI built as a CS2 analysis workspace, not a generic debugger clone.
 - Read-only CS2 context detection for running `cs2.exe` process entries, Steam install roots, and module candidates.
+- Module fingerprinting with file size, image base, and SHA-256 for reproducible reports.
 - Auto-detection of existing `cs2-dumper` output folders without asking the user to browse.
 - Startup auto-workspace that loads detected dump symbols, loads the best CS2 module candidate, and disassembles the first code section.
 - Recursive workspace scan for `offsets.json` / `output/json/offsets.json` under nearby project folders.
@@ -77,6 +78,12 @@ List sections:
 
 ```text
 cs2-analysis-engine sections client.dll
+```
+
+Fingerprint a module:
+
+```text
+cs2-analysis-engine fingerprint client.dll
 ```
 
 Disassemble 256 bytes at an RVA:
