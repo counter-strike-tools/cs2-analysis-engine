@@ -168,6 +168,9 @@ enum Command {
         /// Emit CSV with module, VA, RVA, kind, and name columns.
         #[arg(long)]
         csv: bool,
+        /// With --csv, prepend comment metadata rows before the table header.
+        #[arg(long)]
+        csv_metadata: bool,
         /// Write the generated symbol dump to a file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -468,6 +471,7 @@ fn main() -> Result<()> {
             json,
             envelope,
             csv,
+            csv_metadata,
             out,
         } => {
             let module = module
@@ -484,7 +488,23 @@ fn main() -> Result<()> {
             let filtered_summary = summarize_runtime_symbols(&symbols);
 
             let output = if csv {
-                format_runtime_symbols_csv(image.base, &symbols)
+                format_runtime_symbols_csv(RuntimeSymbolsCsv {
+                    module: &module,
+                    module_base: image.base,
+                    symbols: &symbols,
+                    total_symbols,
+                    filtered_summary: &filtered_summary,
+                    total_summary: &total_summary,
+                    sort,
+                    contains: contains.as_deref(),
+                    kind: kind.as_deref(),
+                    strings_scanned: strings.len(),
+                    signature_hits: findings
+                        .iter()
+                        .map(|finding| finding.matches.len())
+                        .sum::<usize>(),
+                    include_metadata: csv_metadata,
+                })
             } else if json {
                 if envelope {
                     serde_json::to_string_pretty(&RuntimeSymbolDumpEnvelope {
@@ -713,14 +733,74 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
     lines.join("\n")
 }
 
-fn format_runtime_symbols_csv(module_base: u64, symbols: &[engine::LoadedSymbol]) -> String {
-    let mut lines = vec!["module,va,rva,kind,name".to_string()];
-    for symbol in symbols {
+struct RuntimeSymbolsCsv<'a> {
+    module: &'a PathBuf,
+    module_base: u64,
+    symbols: &'a [engine::LoadedSymbol],
+    total_symbols: usize,
+    filtered_summary: &'a engine::RuntimeSymbolSummary,
+    total_summary: &'a engine::RuntimeSymbolSummary,
+    sort: RuntimeSymbolSort,
+    contains: Option<&'a str>,
+    kind: Option<&'a str>,
+    strings_scanned: usize,
+    signature_hits: usize,
+    include_metadata: bool,
+}
+
+fn format_runtime_symbols_csv(input: RuntimeSymbolsCsv<'_>) -> String {
+    let mut lines = Vec::new();
+    if input.include_metadata {
+        lines.push(format!("# module={}", input.module.display()));
+        lines.push(format!("# module_base={:#x}", input.module_base));
+        lines.push(format!("# sort={:?}", input.sort));
+        lines.push(format!(
+            "# filters contains={} kind={}",
+            input.contains.unwrap_or("<none>"),
+            input.kind.unwrap_or("<none>")
+        ));
+        lines.push(format!(
+            "# symbols filtered={} total={}",
+            input.symbols.len(),
+            input.total_symbols
+        ));
+        lines.push(format!(
+            "# filtered_breakdown strings={} signatures={} interfaces={} schemas={} classes={} convars={} source_paths={} formats={} decorated={} other={}",
+            input.filtered_summary.strings,
+            input.filtered_summary.signatures,
+            input.filtered_summary.interfaces,
+            input.filtered_summary.schemas,
+            input.filtered_summary.classes,
+            input.filtered_summary.convars,
+            input.filtered_summary.source_paths,
+            input.filtered_summary.formats,
+            input.filtered_summary.decorated,
+            input.filtered_summary.other
+        ));
+        lines.push(format!(
+            "# total_breakdown strings={} signatures={} interfaces={} schemas={} classes={} convars={} source_paths={} formats={} decorated={} other={}",
+            input.total_summary.strings,
+            input.total_summary.signatures,
+            input.total_summary.interfaces,
+            input.total_summary.schemas,
+            input.total_summary.classes,
+            input.total_summary.convars,
+            input.total_summary.source_paths,
+            input.total_summary.formats,
+            input.total_summary.decorated,
+            input.total_summary.other
+        ));
+        lines.push(format!("# strings_scanned={}", input.strings_scanned));
+        lines.push(format!("# signature_hits={}", input.signature_hits));
+    }
+
+    lines.push("module,va,rva,kind,name".to_string());
+    for symbol in input.symbols {
         lines.push(format!(
             "{},{:#x},{:#x},{},{}",
             csv_escape(&symbol.module),
             symbol.value,
-            symbol_rva(module_base, symbol.value),
+            symbol_rva(input.module_base, symbol.value),
             csv_escape(runtime_symbol_kind_key(&symbol.name)),
             csv_escape(&symbol.name)
         ));
@@ -1056,7 +1136,21 @@ mod tests {
             value: 0x1800_1234,
         }];
 
-        let csv = format_runtime_symbols_csv(0x1800_0000, &symbols);
+        let empty_summary = engine::RuntimeSymbolSummary::default();
+        let csv = format_runtime_symbols_csv(RuntimeSymbolsCsv {
+            module: &PathBuf::from("client.dll"),
+            module_base: 0x1800_0000,
+            symbols: &symbols,
+            total_symbols: symbols.len(),
+            filtered_summary: &empty_summary,
+            total_summary: &empty_summary,
+            sort: RuntimeSymbolSort::Address,
+            contains: None,
+            kind: None,
+            strings_scanned: 0,
+            signature_hits: 0,
+            include_metadata: false,
+        });
         let rows = csv.lines().collect::<Vec<_>>();
 
         assert_eq!(rows[0], "module,va,rva,kind,name");
@@ -1064,6 +1158,44 @@ mod tests {
             rows[1],
             "client.dll,0x18001234,0x1234,interface,\"runtime-string:interface:Source2,Client\"\"002\""
         );
+    }
+
+    #[test]
+    fn runtime_symbol_csv_can_include_comment_metadata() {
+        let symbols = vec![engine::LoadedSymbol {
+            module: "client.dll".to_string(),
+            name: "runtime-signature:rip_relative_load:0000".to_string(),
+            value: 0x1800_1000,
+        }];
+        let summary = engine::RuntimeSymbolSummary {
+            total: 1,
+            signatures: 1,
+            ..engine::RuntimeSymbolSummary::default()
+        };
+
+        let csv = format_runtime_symbols_csv(RuntimeSymbolsCsv {
+            module: &PathBuf::from("client.dll"),
+            module_base: 0x1800_0000,
+            symbols: &symbols,
+            total_symbols: 3,
+            filtered_summary: &summary,
+            total_summary: &summary,
+            sort: RuntimeSymbolSort::Kind,
+            contains: Some("rip"),
+            kind: Some("signature"),
+            strings_scanned: 12,
+            signature_hits: 99,
+            include_metadata: true,
+        });
+        let rows = csv.lines().collect::<Vec<_>>();
+
+        assert_eq!(rows[0], "# module=client.dll");
+        assert_eq!(rows[1], "# module_base=0x18000000");
+        assert_eq!(rows[2], "# sort=Kind");
+        assert_eq!(rows[3], "# filters contains=rip kind=signature");
+        assert_eq!(rows[4], "# symbols filtered=1 total=3");
+        assert_eq!(rows[8], "# signature_hits=99");
+        assert_eq!(rows[9], "module,va,rva,kind,name");
     }
 
     #[test]
