@@ -67,7 +67,7 @@ pub fn detect_cs2_environment() -> Cs2Environment {
     for (pid, process) in system.processes() {
         let name = process.name().to_string_lossy().to_string();
         let lower = name.to_ascii_lowercase();
-        if lower == "cs2.exe" || lower == "steam.exe" {
+        if lower == "cs2.exe" {
             processes.push(Cs2Process {
                 pid: pid.to_string(),
                 name,
@@ -76,7 +76,7 @@ pub fn detect_cs2_environment() -> Cs2Environment {
         }
     }
 
-    processes.sort_by(|a, b| a.name.cmp(&b.name).then(a.pid.cmp(&b.pid)));
+    processes.sort_by(|a, b| a.pid.cmp(&b.pid));
 
     let install_roots = find_steam_cs2_roots();
     let module_candidates = find_cs2_module_candidates(&install_roots);

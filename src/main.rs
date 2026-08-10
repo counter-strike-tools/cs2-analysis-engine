@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
-    ModuleImage, Pattern, disassemble, load_symbol_map, load_symbols, parse_u64, scan_pattern,
+    ModuleImage, Pattern, detect_cs2_environment, disassemble, load_symbol_map, load_symbols,
+    parse_u64, scan_pattern,
 };
 
 #[derive(Parser)]
@@ -20,6 +21,12 @@ struct Cli {
 enum Command {
     /// Launch the desktop GUI.
     Gui,
+    /// Detect read-only CS2 context, installs, and module candidates.
+    Detect {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// List executable and data sections from a PE/module file.
     Sections {
         /// Path to a module file such as client.dll.
@@ -82,6 +89,37 @@ fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Command::Gui) {
         Command::Gui => gui::run_gui(),
+        Command::Detect { json } => {
+            let env = detect_cs2_environment();
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&env)?);
+            } else {
+                println!("cs2.exe processes: {}", env.processes.len());
+                for process in env.processes {
+                    println!(
+                        "  {} pid={} {}",
+                        process.name,
+                        process.pid,
+                        process
+                            .exe
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<path unavailable>".to_string())
+                    );
+                }
+                println!("install roots: {}", env.install_roots.len());
+                for root in env.install_roots {
+                    println!("  {}", root.display());
+                }
+                println!("module candidates: {}", env.module_candidates.len());
+                for module in env.module_candidates {
+                    println!("  {}", module.display());
+                }
+            }
+
+            Ok(())
+        }
         Command::Sections { module, json } => {
             let image = ModuleImage::load(&module)?;
             let sections = image.sections()?;

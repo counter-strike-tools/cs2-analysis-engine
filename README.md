@@ -8,7 +8,7 @@ anti-cheat, inject code, or automate gameplay.
 ## Features
 
 - Desktop GUI built as a CS2 analysis workspace, not a generic debugger clone.
-- Read-only CS2/Steam context detection for running `cs2.exe` / Steam process entries and install/module candidates.
+- Read-only CS2 context detection for running `cs2.exe` process entries, Steam install roots, and module candidates.
 - Quick-load CS2 module candidates such as `client.dll`, `engine2.dll`, `schemasystem.dll`, `tier0.dll`, and `vstdlib.dll`.
 - Module map for section browsing and focused disassembly.
 - Signature scanner for offline module files.
@@ -29,7 +29,7 @@ Instead, it maps those workflows to safe CS2-specific analysis:
 
 | Cheat Engine area | CS2 Analysis Engine equivalent |
 | --- | --- |
-| Process selector | Read-only CS2/Steam context detector |
+| Process selector | Read-only `cs2.exe` context detector plus Steam install discovery |
 | Memory viewer | Offline module map and section browser |
 | Disassembler | Offline x86-64 disassembly from module files |
 | Array-of-byte scan | Offline section-aware signature scanner |
@@ -50,6 +50,12 @@ or:
 
 ```text
 cs2-analysis-engine gui
+```
+
+Detect CS2 context from the CLI:
+
+```text
+cs2-analysis-engine detect
 ```
 
 List sections:

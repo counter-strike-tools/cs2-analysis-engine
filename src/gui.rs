@@ -113,7 +113,7 @@ impl eframe::App for AnalysisApp {
                 );
                 ui.separator();
                 ui.label(if self.status.is_empty() {
-                    "Static CS2 workspace. Detects context, analyzes files, and never attaches to the live game."
+                    "Static CS2 workspace. Prioritizes cs2.exe context, analyzes files, and never attaches to the live game."
                 } else {
                     &self.status
                 });
@@ -128,7 +128,7 @@ impl AnalysisApp {
         ui.horizontal_wrapped(|ui| {
             ui.heading("CS2 Analysis Engine");
             ui.separator();
-            ui.label("CS2 workspace, module intelligence, signatures, dumper data");
+            ui.label("CS2-first workspace, module intelligence, signatures, dumper data");
         });
         ui.add_space(4.0);
     }
@@ -224,7 +224,7 @@ impl AnalysisApp {
 
             if self.env.processes.is_empty() {
                 ui.label(
-                    RichText::new("CS2 is not currently visible in the process list.")
+                    RichText::new("cs2.exe is not currently visible in the process list.")
                         .color(Color32::GRAY),
                 );
             } else {
@@ -523,13 +523,12 @@ impl AnalysisApp {
                         .iter()
                         .position(|section| section.executable)
                         .or(Some(0));
-                    self.status = format!("Loaded module with {} sections.", sections.len());
                     self.module = Some(module);
                     self.sections = sections;
                     self.instructions.clear();
                     self.scan_matches.clear();
-                    self.build_report();
-                    self.active_tab = Tab::ModuleMap;
+                    self.status = format!("Loaded module with {} sections.", self.sections.len());
+                    self.auto_disassemble_loaded_module();
                 }
                 Err(err) => self.set_error(err),
             },
@@ -720,7 +719,7 @@ impl AnalysisApp {
     fn refresh_environment(&mut self) {
         self.env = detect_cs2_environment();
         self.status = format!(
-            "Refreshed CS2 context: {} processes, {} install roots, {} module candidates.",
+            "Refreshed CS2 context: {} cs2.exe processes, {} install roots, {} module candidates.",
             self.env.processes.len(),
             self.env.install_roots.len(),
             self.env.module_candidates.len()
@@ -738,5 +737,26 @@ impl AnalysisApp {
 
         self.module_path = path.display().to_string();
         self.load_module();
+    }
+
+    fn auto_disassemble_loaded_module(&mut self) {
+        let Some(index) = self
+            .selected_section
+            .or_else(|| self.sections.iter().position(|section| section.executable))
+        else {
+            self.build_report();
+            self.active_tab = Tab::ModuleMap;
+            return;
+        };
+
+        if let Some(section) = self.sections.get(index) {
+            self.selected_section = Some(index);
+            self.disasm_start = format!("0x{:x}", section.address);
+            self.disasm_is_rva = false;
+            if self.disasm_len.trim().is_empty() {
+                self.disasm_len = "512".to_string();
+            }
+            self.run_disassembly();
+        }
     }
 }
