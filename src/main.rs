@@ -165,6 +165,9 @@ enum Command {
         /// With --json, include module, filters, summaries, and symbols in one object.
         #[arg(long)]
         envelope: bool,
+        /// Emit CSV with module, VA, RVA, kind, and name columns.
+        #[arg(long)]
+        csv: bool,
         /// Write the generated symbol dump to a file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -464,6 +467,7 @@ fn main() -> Result<()> {
             sort,
             json,
             envelope,
+            csv,
             out,
         } => {
             let module = module
@@ -479,7 +483,9 @@ fn main() -> Result<()> {
             sort_runtime_symbols(&mut symbols, sort);
             let filtered_summary = summarize_runtime_symbols(&symbols);
 
-            let output = if json {
+            let output = if csv {
+                format_runtime_symbols_csv(image.base, &symbols)
+            } else if json {
                 if envelope {
                     serde_json::to_string_pretty(&RuntimeSymbolDumpEnvelope {
                         module: module.display().to_string(),
@@ -705,6 +711,29 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
     }
 
     lines.join("\n")
+}
+
+fn format_runtime_symbols_csv(module_base: u64, symbols: &[engine::LoadedSymbol]) -> String {
+    let mut lines = vec!["module,va,rva,kind,name".to_string()];
+    for symbol in symbols {
+        lines.push(format!(
+            "{},{:#x},{:#x},{},{}",
+            csv_escape(&symbol.module),
+            symbol.value,
+            symbol_rva(module_base, symbol.value),
+            csv_escape(runtime_symbol_kind_key(&symbol.name)),
+            csv_escape(&symbol.name)
+        ));
+    }
+    lines.join("\n")
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
 }
 
 fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String {
