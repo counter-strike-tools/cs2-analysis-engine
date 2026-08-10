@@ -1043,3 +1043,39 @@ fn format_string_kind(kind: StringKind) -> &'static str {
         StringKind::Other => "other",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_symbol_csv_includes_va_rva_kind_and_escaped_name() {
+        let symbols = vec![engine::LoadedSymbol {
+            module: "client.dll".to_string(),
+            name: "runtime-string:interface:Source2,Client\"002".to_string(),
+            value: 0x1800_1234,
+        }];
+
+        let csv = format_runtime_symbols_csv(0x1800_0000, &symbols);
+        let rows = csv.lines().collect::<Vec<_>>();
+
+        assert_eq!(rows[0], "module,va,rva,kind,name");
+        assert_eq!(
+            rows[1],
+            "client.dll,0x18001234,0x1234,interface,\"runtime-string:interface:Source2,Client\"\"002\""
+        );
+    }
+
+    #[test]
+    fn runtime_symbol_rva_saturates_below_module_base() {
+        assert_eq!(symbol_rva(0x1800_0000, 0x1800_1000), 0x1000);
+        assert_eq!(symbol_rva(0x1800_0000, 0x1700_0000), 0);
+    }
+
+    #[test]
+    fn csv_escape_quotes_special_values_only() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("needs,quote"), "\"needs,quote\"");
+        assert_eq!(csv_escape("has \"quote\""), "\"has \"\"quote\"\"\"");
+    }
+}
