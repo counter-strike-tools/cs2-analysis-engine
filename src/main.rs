@@ -156,6 +156,12 @@ enum Command {
         /// Keep only a symbol kind: string, signature, interface, schema, class, convar, source-path, format, or decorated.
         #[arg(long)]
         kind: Option<String>,
+        /// Keep only symbols at or above this RVA. Accepts decimal or 0x-prefixed hex.
+        #[arg(long)]
+        rva_min: Option<String>,
+        /// Keep only symbols at or below this RVA. Accepts decimal or 0x-prefixed hex.
+        #[arg(long)]
+        rva_max: Option<String>,
         /// Sort generated symbols by address, name, or kind.
         #[arg(long, value_enum, default_value_t = RuntimeSymbolSort::Address)]
         sort: RuntimeSymbolSort,
@@ -467,6 +473,8 @@ fn main() -> Result<()> {
             limit,
             contains,
             kind,
+            rva_min,
+            rva_max,
             sort,
             json,
             envelope,
@@ -484,7 +492,19 @@ fn main() -> Result<()> {
             let symbols = derive_runtime_symbols(&image, &strings, &findings);
             let total_symbols = symbols.len();
             let total_summary = summarize_runtime_symbols(&symbols);
+            let rva_min = rva_min
+                .as_deref()
+                .map(parse_u64)
+                .transpose()
+                .context("invalid --rva-min")?;
+            let rva_max = rva_max
+                .as_deref()
+                .map(parse_u64)
+                .transpose()
+                .context("invalid --rva-max")?;
+            validate_runtime_symbol_rva_range(rva_min, rva_max)?;
             let mut symbols = filter_loaded_symbols(symbols, contains.as_deref(), kind.as_deref());
+            symbols = filter_runtime_symbols_by_rva(symbols, image.base, rva_min, rva_max);
             sort_runtime_symbols(&mut symbols, sort);
             let filtered_summary = summarize_runtime_symbols(&symbols);
 
@@ -499,6 +519,8 @@ fn main() -> Result<()> {
                     sort,
                     contains: contains.as_deref(),
                     kind: kind.as_deref(),
+                    rva_min,
+                    rva_max,
                     strings_scanned: strings.len(),
                     signature_hits: findings
                         .iter()
@@ -514,6 +536,8 @@ fn main() -> Result<()> {
                         min_len,
                         contains: contains.clone(),
                         kind: kind.clone(),
+                        rva_min,
+                        rva_max,
                         sort,
                         total_symbols,
                         filtered_symbols: symbols.len(),
@@ -538,6 +562,10 @@ fn main() -> Result<()> {
                     filtered_summary: &filtered_summary,
                     total_summary: &total_summary,
                     sort,
+                    contains: contains.as_deref(),
+                    kind: kind.as_deref(),
+                    rva_min,
+                    rva_max,
                     strings_scanned: strings.len(),
                     signature_hits: findings
                         .iter()
@@ -632,6 +660,31 @@ fn validate_runtime_symbol_output_options(
     Ok(())
 }
 
+fn validate_runtime_symbol_rva_range(rva_min: Option<u64>, rva_max: Option<u64>) -> Result<()> {
+    if let (Some(min), Some(max)) = (rva_min, rva_max) {
+        if min > max {
+            anyhow::bail!("--rva-min cannot be greater than --rva-max");
+        }
+    }
+
+    Ok(())
+}
+
+fn filter_runtime_symbols_by_rva(
+    symbols: Vec<engine::LoadedSymbol>,
+    module_base: u64,
+    rva_min: Option<u64>,
+    rva_max: Option<u64>,
+) -> Vec<engine::LoadedSymbol> {
+    symbols
+        .into_iter()
+        .filter(|symbol| {
+            let rva = symbol_rva(module_base, symbol.value);
+            rva_min.is_none_or(|min| rva >= min) && rva_max.is_none_or(|max| rva <= max)
+        })
+        .collect()
+}
+
 fn sort_runtime_symbols(symbols: &mut [engine::LoadedSymbol], sort: RuntimeSymbolSort) {
     match sort {
         RuntimeSymbolSort::Address => symbols.sort_by(|a, b| {
@@ -670,6 +723,8 @@ struct RuntimeSymbolDumpEnvelope {
     min_len: usize,
     contains: Option<String>,
     kind: Option<String>,
+    rva_min: Option<u64>,
+    rva_max: Option<u64>,
     sort: RuntimeSymbolSort,
     total_symbols: usize,
     filtered_symbols: usize,
@@ -688,6 +743,10 @@ struct RuntimeSymbolsText<'a> {
     filtered_summary: &'a engine::RuntimeSymbolSummary,
     total_summary: &'a engine::RuntimeSymbolSummary,
     sort: RuntimeSymbolSort,
+    contains: Option<&'a str>,
+    kind: Option<&'a str>,
+    rva_min: Option<u64>,
+    rva_max: Option<u64>,
     strings_scanned: usize,
     signature_hits: usize,
     limit: usize,
@@ -703,6 +762,19 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
         input.total_symbols
     ));
     lines.push(format!("sort: {:?}", input.sort));
+    lines.push(format!(
+        "filters: contains={} kind={} rva-min={} rva-max={}",
+        input.contains.unwrap_or("<none>"),
+        input.kind.unwrap_or("<none>"),
+        input
+            .rva_min
+            .map(|value| format!("{value:#x}"))
+            .unwrap_or_else(|| "<none>".to_string()),
+        input
+            .rva_max
+            .map(|value| format!("{value:#x}"))
+            .unwrap_or_else(|| "<none>".to_string())
+    ));
     lines.push(format!(
         "runtime breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
         input.filtered_summary.strings,
@@ -763,6 +835,8 @@ struct RuntimeSymbolsCsv<'a> {
     sort: RuntimeSymbolSort,
     contains: Option<&'a str>,
     kind: Option<&'a str>,
+    rva_min: Option<u64>,
+    rva_max: Option<u64>,
     strings_scanned: usize,
     signature_hits: usize,
     include_metadata: bool,
@@ -775,9 +849,17 @@ fn format_runtime_symbols_csv(input: RuntimeSymbolsCsv<'_>) -> String {
         lines.push(format!("# module_base={:#x}", input.module_base));
         lines.push(format!("# sort={:?}", input.sort));
         lines.push(format!(
-            "# filters contains={} kind={}",
+            "# filters contains={} kind={} rva_min={} rva_max={}",
             input.contains.unwrap_or("<none>"),
-            input.kind.unwrap_or("<none>")
+            input.kind.unwrap_or("<none>"),
+            input
+                .rva_min
+                .map(|value| format!("{value:#x}"))
+                .unwrap_or_else(|| "<none>".to_string()),
+            input
+                .rva_max
+                .map(|value| format!("{value:#x}"))
+                .unwrap_or_else(|| "<none>".to_string())
         ));
         lines.push(format!(
             "# symbols filtered={} total={}",
@@ -1167,6 +1249,8 @@ mod tests {
             sort: RuntimeSymbolSort::Address,
             contains: None,
             kind: None,
+            rva_min: None,
+            rva_max: None,
             strings_scanned: 0,
             signature_hits: 0,
             include_metadata: false,
@@ -1203,6 +1287,8 @@ mod tests {
             sort: RuntimeSymbolSort::Kind,
             contains: Some("rip"),
             kind: Some("signature"),
+            rva_min: Some(0x1000),
+            rva_max: Some(0x2000),
             strings_scanned: 12,
             signature_hits: 99,
             include_metadata: true,
@@ -1212,10 +1298,50 @@ mod tests {
         assert_eq!(rows[0], "# module=client.dll");
         assert_eq!(rows[1], "# module_base=0x18000000");
         assert_eq!(rows[2], "# sort=Kind");
-        assert_eq!(rows[3], "# filters contains=rip kind=signature");
+        assert_eq!(
+            rows[3],
+            "# filters contains=rip kind=signature rva_min=0x1000 rva_max=0x2000"
+        );
         assert_eq!(rows[4], "# symbols filtered=1 total=3");
         assert_eq!(rows[8], "# signature_hits=99");
         assert_eq!(rows[9], "module,va,rva,kind,name");
+    }
+
+    #[test]
+    fn runtime_symbols_can_be_filtered_by_rva_window() {
+        let symbols = vec![
+            engine::LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-signature:early:0000".to_string(),
+                value: 0x1800_1000,
+            },
+            engine::LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-signature:inside:0000".to_string(),
+                value: 0x1800_2000,
+            },
+            engine::LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-signature:late:0000".to_string(),
+                value: 0x1800_3000,
+            },
+        ];
+
+        let filtered =
+            filter_runtime_symbols_by_rva(symbols, 0x1800_0000, Some(0x1800), Some(0x2800));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "runtime-signature:inside:0000");
+    }
+
+    #[test]
+    fn runtime_symbol_rva_range_rejects_inverted_bounds() {
+        let err = validate_runtime_symbol_rva_range(Some(0x3000), Some(0x2000)).unwrap_err();
+        assert!(err.to_string().contains("--rva-min cannot be greater"));
+
+        validate_runtime_symbol_rva_range(Some(0x1000), Some(0x2000)).unwrap();
+        validate_runtime_symbol_rva_range(None, Some(0x2000)).unwrap();
+        validate_runtime_symbol_rva_range(Some(0x1000), None).unwrap();
     }
 
     #[test]
