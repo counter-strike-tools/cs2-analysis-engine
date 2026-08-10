@@ -5,9 +5,9 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use crate::engine::{
     CrossReference, CrossReferenceTargetKind, Cs2Environment, DecodedInstruction, LoadedSymbol,
-    ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, SymbolMap,
-    detect_cs2_environment, disassemble, extract_cross_references, load_symbol_map, load_symbols,
-    parse_u64, run_signature_presets, scan_pattern,
+    ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, StringReference, SymbolMap,
+    detect_cs2_environment, disassemble, extract_ascii_strings, extract_cross_references,
+    load_symbol_map, load_symbols, parse_u64, run_signature_presets, scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -57,6 +57,7 @@ struct AnalysisApp {
     scan_pattern_text: String,
     instructions: Vec<DecodedInstruction>,
     cross_references: Vec<CrossReference>,
+    strings: Vec<StringReference>,
     scan_matches: Vec<PatternMatch>,
     signature_findings: Vec<SignatureFinding>,
     status: String,
@@ -69,6 +70,7 @@ enum Tab {
     #[default]
     Overview,
     ModuleMap,
+    Strings,
     Signatures,
     DumperData,
     Report,
@@ -91,6 +93,7 @@ impl Default for AnalysisApp {
             scan_pattern_text: String::new(),
             instructions: Vec::new(),
             cross_references: Vec::new(),
+            strings: Vec::new(),
             scan_matches: Vec::new(),
             signature_findings: Vec::new(),
             status: String::new(),
@@ -302,6 +305,7 @@ impl AnalysisApp {
         ui.horizontal(|ui| {
             self.tab_button(ui, Tab::Overview, "Overview");
             self.tab_button(ui, Tab::ModuleMap, "Module map");
+            self.tab_button(ui, Tab::Strings, "Strings");
             self.tab_button(ui, Tab::Signatures, "Signatures");
             self.tab_button(ui, Tab::DumperData, "Dumper data");
             self.tab_button(ui, Tab::Report, "Report");
@@ -311,6 +315,7 @@ impl AnalysisApp {
         match self.active_tab {
             Tab::Overview => self.overview_tab(ui),
             Tab::ModuleMap => self.module_map_tab(ui),
+            Tab::Strings => self.strings_tab(ui),
             Tab::Signatures => self.signatures_tab(ui),
             Tab::DumperData => self.dumper_data_tab(ui),
             Tab::Report => self.report_tab(ui),
@@ -381,6 +386,18 @@ impl AnalysisApp {
                         .to_string(),
                 );
                 ui.end_row();
+                self.summary_card(ui, "Module strings", &self.strings.len().to_string());
+                self.summary_card(
+                    ui,
+                    "Long strings",
+                    &self
+                        .strings
+                        .iter()
+                        .filter(|item| item.value.len() >= 24)
+                        .count()
+                        .to_string(),
+                );
+                ui.end_row();
                 self.summary_card(
                     ui,
                     "Code/data xrefs",
@@ -433,6 +450,9 @@ impl AnalysisApp {
             }
             if ui.button("Find built-in signatures").clicked() {
                 self.run_signature_findings();
+            }
+            if ui.button("Extract strings").clicked() {
+                self.run_string_extraction();
             }
             if ui.button("Build report").clicked() {
                 self.build_report();
@@ -493,6 +513,47 @@ impl AnalysisApp {
                         ui.monospace(&instruction.text);
                         ui.monospace(format_instruction_target(instruction));
                         ui.label(instruction.symbol.as_deref().unwrap_or(""));
+                        ui.end_row();
+                    }
+                });
+        });
+    }
+
+    fn strings_tab(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("Extracted strings: {}", self.strings.len()));
+            if ui.button("Extract strings").clicked() {
+                self.run_string_extraction();
+            }
+            if ui.button("Copy strings").clicked() {
+                ui.ctx().copy_text(self.output.clone());
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.label("Reads printable strings from non-executable module sections on disk.");
+
+        egui::ScrollArea::both().id_salt("strings").show(ui, |ui| {
+            if self.strings.is_empty() {
+                ui.label("String references will appear here after a module is loaded.");
+                return;
+            }
+
+            egui::Grid::new("strings_grid")
+                .striped(true)
+                .num_columns(4)
+                .show(ui, |ui| {
+                    ui.strong("Section");
+                    ui.strong("RVA");
+                    ui.strong("VA");
+                    ui.strong("Value");
+                    ui.end_row();
+
+                    for item in self.strings.iter().take(500) {
+                        ui.monospace(&item.section);
+                        ui.monospace(format!("{:#010x}", item.rva));
+                        ui.monospace(format!("{:#014x}", item.virtual_address));
+                        ui.label(&item.value);
                         ui.end_row();
                     }
                 });
@@ -644,6 +705,7 @@ impl AnalysisApp {
                     self.sections = sections;
                     self.instructions.clear();
                     self.cross_references.clear();
+                    self.strings.clear();
                     self.scan_matches.clear();
                     self.signature_findings.clear();
                     self.status = format!("Loaded module with {} sections.", self.sections.len());
@@ -721,6 +783,18 @@ impl AnalysisApp {
             }
             Err(err) => self.set_error(err),
         }
+    }
+
+    fn run_string_extraction(&mut self) {
+        let Some(module) = &self.module else {
+            self.status = "Load a module before extracting strings.".to_string();
+            return;
+        };
+
+        self.strings = extract_ascii_strings(module, 5);
+        self.status = format!("Extracted {} strings.", self.strings.len());
+        self.active_tab = Tab::Strings;
+        self.build_string_output();
     }
 
     fn run_signature_findings(&mut self) {
@@ -826,6 +900,15 @@ impl AnalysisApp {
             )
             .ok();
         }
+        writeln!(&mut report, "strings: {}", self.strings.len()).ok();
+        for item in self.strings.iter().take(80) {
+            writeln!(
+                &mut report,
+                "  {:<10} rva={:#010x} va={:#014x} {}",
+                item.section, item.rva, item.virtual_address, item.value
+            )
+            .ok();
+        }
         writeln!(
             &mut report,
             "last pattern matches: {}",
@@ -876,6 +959,19 @@ impl AnalysisApp {
                 &mut out,
                 "rva={:#x} va={:#x}",
                 item.rva, item.virtual_address
+            )
+            .ok();
+        }
+        self.output = out;
+    }
+
+    fn build_string_output(&mut self) {
+        let mut out = String::new();
+        for item in &self.strings {
+            writeln!(
+                &mut out,
+                "{:<10} rva={:#010x} va={:#014x} {}",
+                item.section, item.rva, item.virtual_address, item.value
             )
             .ok();
         }
@@ -1011,6 +1107,7 @@ impl AnalysisApp {
                 self.disasm_len = "512".to_string();
             }
             self.run_disassembly();
+            self.run_string_extraction();
             self.run_signature_findings();
         }
     }

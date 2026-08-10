@@ -7,8 +7,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
     CrossReferenceTargetKind, ModuleImage, Pattern, build_auto_workspace_report,
-    detect_cs2_environment, disassemble, load_symbol_map, load_symbols, parse_u64,
-    run_signature_presets, scan_pattern,
+    detect_cs2_environment, disassemble, extract_ascii_strings, load_symbol_map, load_symbols,
+    parse_u64, run_signature_presets, scan_pattern,
 };
 
 #[derive(Parser)]
@@ -71,6 +71,20 @@ enum Command {
         module: PathBuf,
         /// Hex pattern, for example: "48 8B ?? ?? 89".
         pattern: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Extract printable ASCII strings from non-executable module sections.
+    Strings {
+        /// Path to a module file such as client.dll.
+        module: PathBuf,
+        /// Minimum string length.
+        #[arg(long, default_value_t = 5)]
+        min_len: usize,
+        /// Maximum text rows to print. JSON output always includes all strings.
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -196,6 +210,7 @@ fn main() -> Result<()> {
                         .filter(|xref| xref.target_kind == CrossReferenceTargetKind::OutsideImage)
                         .count()
                 );
+                println!("strings: {}", report.strings.len());
                 let signature_hits = report
                     .signature_findings
                     .iter()
@@ -282,6 +297,34 @@ fn main() -> Result<()> {
             } else {
                 for item in matches {
                     println!("rva={:#x} va={:#x}", item.rva, item.virtual_address);
+                }
+            }
+
+            Ok(())
+        }
+        Command::Strings {
+            module,
+            min_len,
+            limit,
+            json,
+        } => {
+            let image = ModuleImage::load(&module)?;
+            let strings = extract_ascii_strings(&image, min_len);
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&strings)?);
+            } else if strings.is_empty() {
+                println!("no strings");
+            } else {
+                let total = strings.len();
+                for item in strings.iter().take(limit) {
+                    println!(
+                        "{:<10} rva={:#010x} va={:#014x} {}",
+                        item.section, item.rva, item.virtual_address, item.value
+                    );
+                }
+                if total > limit {
+                    println!("... showing {limit} of {total} strings; use --limit to adjust");
                 }
             }
 

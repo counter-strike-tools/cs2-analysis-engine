@@ -69,6 +69,14 @@ pub enum CrossReferenceTargetKind {
     OutsideImage,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StringReference {
+    pub rva: u64,
+    pub virtual_address: u64,
+    pub section: String,
+    pub value: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct WorkspaceReport {
     pub environment: Cs2Environment,
@@ -78,6 +86,7 @@ pub struct WorkspaceReport {
     pub symbols: Vec<LoadedSymbol>,
     pub disassembly: Vec<DecodedInstruction>,
     pub cross_references: Vec<CrossReference>,
+    pub strings: Vec<StringReference>,
     pub signature_findings: Vec<SignatureFinding>,
 }
 
@@ -106,6 +115,22 @@ pub struct ModuleImage {
     pub base: u64,
     bytes: Vec<u8>,
     file: object::File<'static>,
+}
+
+fn normalize_object_va(image_base: u64, object_address: u64) -> u64 {
+    if object_address >= image_base {
+        object_address
+    } else {
+        image_base + object_address
+    }
+}
+
+fn normalize_object_rva(image_base: u64, object_address: u64) -> u64 {
+    if object_address >= image_base {
+        object_address - image_base
+    } else {
+        object_address
+    }
 }
 
 pub fn detect_cs2_environment() -> Cs2Environment {
@@ -338,7 +363,7 @@ impl ModuleImage {
 
                 Ok(SectionInfo {
                     name,
-                    address: self.base + section.address(),
+                    address: normalize_object_va(self.base, section.address()),
                     size: section.size(),
                     file_range,
                     executable,
@@ -353,7 +378,7 @@ impl ModuleImage {
             .with_context(|| format!("address {va:#x} is below image base {:#x}", self.base))?;
 
         for section in self.file.sections() {
-            let start = section.address();
+            let start = normalize_object_rva(self.base, section.address());
             let end = start.saturating_add(section.size());
             if rva >= start && rva < end {
                 let offset_in_section = rva - start;
@@ -529,7 +554,7 @@ pub fn scan_pattern(image: &ModuleImage, pattern: &Pattern) -> Vec<PatternMatch>
                 .all(|(expected, actual)| expected.is_none_or(|value| value == *actual));
 
             if is_match {
-                let rva = section.address() + offset as u64;
+                let rva = normalize_object_rva(image.base, section.address()) + offset as u64;
                 matches.push(PatternMatch {
                     rva,
                     virtual_address: image.base + rva,
@@ -600,6 +625,117 @@ pub fn run_signature_presets(image: &ModuleImage) -> Result<Vec<SignatureFinding
         .collect()
 }
 
+pub fn extract_ascii_strings(image: &ModuleImage, min_len: usize) -> Vec<StringReference> {
+    let min_len = min_len.max(1);
+    let mut strings = Vec::new();
+
+    for section in image.file.sections() {
+        let executable = match section.flags() {
+            object::SectionFlags::Coff { characteristics } => {
+                characteristics & object::pe::IMAGE_SCN_MEM_EXECUTE != 0
+            }
+            _ => false,
+        };
+
+        if executable {
+            continue;
+        }
+
+        let Some((file_offset, file_size)) = section.file_range() else {
+            continue;
+        };
+
+        let start = file_offset as usize;
+        let end = start
+            .saturating_add(file_size as usize)
+            .min(image.bytes.len());
+        let section_name = section.name().unwrap_or("<unnamed>");
+        collect_ascii_strings_from_bytes(
+            &mut strings,
+            section_name,
+            image.base,
+            normalize_object_va(image.base, section.address()),
+            &image.bytes[start..end],
+            min_len,
+        );
+    }
+
+    strings
+}
+
+fn collect_ascii_strings_from_bytes(
+    out: &mut Vec<StringReference>,
+    section: &str,
+    image_base: u64,
+    section_va: u64,
+    bytes: &[u8],
+    min_len: usize,
+) {
+    let mut start = None;
+
+    for (index, byte) in bytes.iter().enumerate() {
+        if is_ascii_string_byte(*byte) {
+            start.get_or_insert(index);
+            continue;
+        }
+
+        if let Some(start_index) = start.take() {
+            push_ascii_string(
+                out,
+                section,
+                image_base,
+                section_va,
+                bytes,
+                start_index,
+                index,
+                min_len,
+            );
+        }
+    }
+
+    if let Some(start_index) = start {
+        push_ascii_string(
+            out,
+            section,
+            image_base,
+            section_va,
+            bytes,
+            start_index,
+            bytes.len(),
+            min_len,
+        );
+    }
+}
+
+fn push_ascii_string(
+    out: &mut Vec<StringReference>,
+    section: &str,
+    image_base: u64,
+    section_va: u64,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    min_len: usize,
+) {
+    if end.saturating_sub(start) < min_len {
+        return;
+    }
+
+    let value = String::from_utf8_lossy(&bytes[start..end]).to_string();
+    let virtual_address = section_va + start as u64;
+
+    out.push(StringReference {
+        rva: virtual_address.saturating_sub(image_base),
+        virtual_address,
+        section: section.to_string(),
+        value,
+    });
+}
+
+fn is_ascii_string_byte(byte: u8) -> bool {
+    matches!(byte, 0x20..=0x7e)
+}
+
 pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
     let environment = detect_cs2_environment();
     let selected_module = select_best_module(&environment.module_candidates).cloned();
@@ -609,6 +745,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
     let mut disassembly = Vec::new();
     let mut cross_references = Vec::new();
     let mut signature_findings = Vec::new();
+    let mut strings = Vec::new();
     let mut symbols = Vec::new();
     let mut symbol_map = SymbolMap::default();
 
@@ -628,6 +765,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
             disassembly = disassemble(&image, section.address, disasm_len, &symbol_map)?;
             cross_references = extract_cross_references(&disassembly, &sections);
         }
+        strings = extract_ascii_strings(&image, 5);
         signature_findings = run_signature_presets(&image)?;
     }
 
@@ -639,6 +777,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
         symbols,
         disassembly,
         cross_references,
+        strings,
         signature_findings,
     })
 }
@@ -770,6 +909,16 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_object_addresses_from_rva_or_already_based_va() {
+        let image_base = 0x1800_0000;
+
+        assert_eq!(normalize_object_va(image_base, 0x3000), 0x1800_3000);
+        assert_eq!(normalize_object_rva(image_base, 0x3000), 0x3000);
+        assert_eq!(normalize_object_va(image_base, 0x1800_3000), 0x1800_3000);
+        assert_eq!(normalize_object_rva(image_base, 0x1800_3000), 0x3000);
+    }
+
+    #[test]
     fn classifies_cross_reference_targets_by_section_kind() {
         let sections = test_sections();
 
@@ -819,5 +968,26 @@ mod tests {
             xrefs[0].target_symbol.as_deref(),
             Some("client.dll!offset:dwEntityList")
         );
+    }
+
+    #[test]
+    fn collects_ascii_strings_with_addresses_and_minimum_length() {
+        let mut strings = Vec::new();
+        collect_ascii_strings_from_bytes(
+            &mut strings,
+            ".rdata",
+            0x1800_0000,
+            0x1800_3000,
+            b"\0Source2Client002\0abc\0C_CSPlayerPawn\0",
+            5,
+        );
+
+        assert_eq!(strings.len(), 2);
+        assert_eq!(strings[0].section, ".rdata");
+        assert_eq!(strings[0].rva, 0x3001);
+        assert_eq!(strings[0].virtual_address, 0x1800_3001);
+        assert_eq!(strings[0].value, "Source2Client002");
+        assert_eq!(strings[1].rva, 0x3016);
+        assert_eq!(strings[1].value, "C_CSPlayerPawn");
     }
 }

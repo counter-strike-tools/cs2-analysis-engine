@@ -17,6 +17,7 @@ anti-cheat, inject code, or automate gameplay.
 - Module map for section browsing and focused disassembly.
 - RIP-relative target resolution in disassembly, with dumper-symbol annotations when available.
 - Cross-reference extraction from resolved disassembly targets, including target section and code/data/outside-image classification.
+- Offline printable string extraction from non-executable module sections for interface/schema/logging anchors.
 - Signature scanner for offline module files.
 - Dumper-data browser for offsets, buttons, and interfaces.
 - Workspace report export for review and sharing.
@@ -92,6 +93,12 @@ Scan for a byte pattern:
 
 ```text
 cs2-analysis-engine scan client.dll "48 8B ?? ?? 89"
+```
+
+Extract module strings:
+
+```text
+cs2-analysis-engine strings client.dll --min-len 5 --limit 200
 ```
 
 Run built-in signature finders:
