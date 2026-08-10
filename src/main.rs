@@ -176,6 +176,7 @@ fn main() -> Result<()> {
                 println!("sections: {}", report.sections.len());
                 println!("symbols: {}", report.symbols.len());
                 println!("disassembly rows: {}", report.disassembly.len());
+                println!("cross references: {}", report.cross_references.len());
                 let signature_hits = report
                     .signature_findings
                     .iter()

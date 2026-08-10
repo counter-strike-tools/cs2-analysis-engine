@@ -4,9 +4,10 @@ use anyhow::Result;
 use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use crate::engine::{
-    Cs2Environment, DecodedInstruction, LoadedSymbol, ModuleImage, Pattern, PatternMatch,
-    SectionInfo, SignatureFinding, SymbolMap, detect_cs2_environment, disassemble, load_symbol_map,
-    load_symbols, parse_u64, run_signature_presets, scan_pattern,
+    CrossReference, Cs2Environment, DecodedInstruction, LoadedSymbol, ModuleImage, Pattern,
+    PatternMatch, SectionInfo, SignatureFinding, SymbolMap, detect_cs2_environment, disassemble,
+    extract_cross_references, load_symbol_map, load_symbols, parse_u64, run_signature_presets,
+    scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -55,6 +56,7 @@ struct AnalysisApp {
     disasm_is_rva: bool,
     scan_pattern_text: String,
     instructions: Vec<DecodedInstruction>,
+    cross_references: Vec<CrossReference>,
     scan_matches: Vec<PatternMatch>,
     signature_findings: Vec<SignatureFinding>,
     status: String,
@@ -88,6 +90,7 @@ impl Default for AnalysisApp {
             disasm_is_rva: false,
             scan_pattern_text: String::new(),
             instructions: Vec::new(),
+            cross_references: Vec::new(),
             scan_matches: Vec::new(),
             signature_findings: Vec::new(),
             status: String::new(),
@@ -364,6 +367,22 @@ impl AnalysisApp {
                 ui.end_row();
                 self.summary_card(
                     ui,
+                    "Cross references",
+                    &self.cross_references.len().to_string(),
+                );
+                self.summary_card(
+                    ui,
+                    "Symbol xrefs",
+                    &self
+                        .cross_references
+                        .iter()
+                        .filter(|xref| xref.target_symbol.is_some())
+                        .count()
+                        .to_string(),
+                );
+                ui.end_row();
+                self.summary_card(
+                    ui,
                     "Signature groups",
                     &self.signature_findings.len().to_string(),
                 );
@@ -607,6 +626,7 @@ impl AnalysisApp {
                     self.module = Some(module);
                     self.sections = sections;
                     self.instructions.clear();
+                    self.cross_references.clear();
                     self.scan_matches.clear();
                     self.signature_findings.clear();
                     self.status = format!("Loaded module with {} sections.", self.sections.len());
@@ -657,6 +677,7 @@ impl AnalysisApp {
                     Ok(instructions) => {
                         self.status = format!("Decoded {} instructions.", instructions.len());
                         self.instructions = instructions;
+                        self.cross_references = extract_cross_references(&self.instructions);
                         self.active_tab = Tab::ModuleMap;
                         self.build_disasm_output();
                     }
@@ -768,6 +789,23 @@ impl AnalysisApp {
             self.instructions.len()
         )
         .ok();
+        writeln!(
+            &mut report,
+            "cross references: {}",
+            self.cross_references.len()
+        )
+        .ok();
+        for xref in self.cross_references.iter().take(50) {
+            writeln!(
+                &mut report,
+                "  {:#014x} -> {:#014x} {} {}",
+                xref.source,
+                xref.target,
+                xref.instruction,
+                xref.target_symbol.as_deref().unwrap_or("")
+            )
+            .ok();
+        }
         writeln!(
             &mut report,
             "last pattern matches: {}",

@@ -52,6 +52,14 @@ pub struct SignatureFinding {
     pub matches: Vec<PatternMatch>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CrossReference {
+    pub source: u64,
+    pub target: u64,
+    pub instruction: String,
+    pub target_symbol: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct WorkspaceReport {
     pub environment: Cs2Environment,
@@ -60,6 +68,7 @@ pub struct WorkspaceReport {
     pub sections: Vec<SectionInfo>,
     pub symbols: Vec<LoadedSymbol>,
     pub disassembly: Vec<DecodedInstruction>,
+    pub cross_references: Vec<CrossReference>,
     pub signature_findings: Vec<SignatureFinding>,
 }
 
@@ -417,6 +426,20 @@ fn rip_relative_target(instruction: &Instruction) -> Option<u64> {
         .filter(|target| *target != 0)
 }
 
+pub fn extract_cross_references(instructions: &[DecodedInstruction]) -> Vec<CrossReference> {
+    instructions
+        .iter()
+        .filter_map(|instruction| {
+            instruction.rip_target.map(|target| CrossReference {
+                source: instruction.address,
+                target,
+                instruction: instruction.text.clone(),
+                target_symbol: instruction.target_symbol.clone(),
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct Pattern(Vec<Option<u8>>);
 
@@ -547,6 +570,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
 
     let mut sections = Vec::new();
     let mut disassembly = Vec::new();
+    let mut cross_references = Vec::new();
     let mut signature_findings = Vec::new();
     let mut symbols = Vec::new();
     let mut symbol_map = SymbolMap::default();
@@ -565,6 +589,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
             .or_else(|| sections.first())
         {
             disassembly = disassemble(&image, section.address, disasm_len, &symbol_map)?;
+            cross_references = extract_cross_references(&disassembly);
         }
         signature_findings = run_signature_presets(&image)?;
     }
@@ -576,6 +601,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
         sections,
         symbols,
         disassembly,
+        cross_references,
         signature_findings,
     })
 }

@@ -16,6 +16,7 @@ anti-cheat, inject code, or automate gameplay.
 - Quick-load CS2 module candidates such as `client.dll`, `engine2.dll`, `schemasystem.dll`, `tier0.dll`, and `vstdlib.dll`.
 - Module map for section browsing and focused disassembly.
 - RIP-relative target resolution in disassembly, with dumper-symbol annotations when available.
+- Cross-reference extraction from resolved disassembly targets for workspace reports.
 - Signature scanner for offline module files.
 - Dumper-data browser for offsets, buttons, and interfaces.
 - Workspace report export for review and sharing.
