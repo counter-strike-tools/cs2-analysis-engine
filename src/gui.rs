@@ -5,9 +5,10 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use crate::engine::{
     CrossReference, CrossReferenceTargetKind, Cs2Environment, DecodedInstruction, LoadedSymbol,
-    ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, StringReference, SymbolMap,
-    detect_cs2_environment, disassemble, extract_ascii_strings, extract_cross_references,
-    load_symbol_map, load_symbols, parse_u64, run_signature_presets, scan_pattern,
+    ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, StringKind, StringReference,
+    SymbolMap, detect_cs2_environment, disassemble, extract_ascii_strings,
+    extract_cross_references, load_symbol_map, load_symbols, parse_u64, run_signature_presets,
+    scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -389,13 +390,29 @@ impl AnalysisApp {
                 self.summary_card(ui, "Module strings", &self.strings.len().to_string());
                 self.summary_card(
                     ui,
-                    "Long strings",
+                    "Interface strings",
                     &self
-                        .strings
-                        .iter()
-                        .filter(|item| item.value.len() >= 24)
-                        .count()
+                        .string_kind_count(StringKind::InterfaceName)
                         .to_string(),
+                );
+                ui.end_row();
+                self.summary_card(
+                    ui,
+                    "Schema/class strings",
+                    &format!(
+                        "{} schema, {} class",
+                        self.string_kind_count(StringKind::SchemaName),
+                        self.string_kind_count(StringKind::ClassName)
+                    ),
+                );
+                self.summary_card(
+                    ui,
+                    "Convars/source paths",
+                    &format!(
+                        "{} convars, {} paths",
+                        self.string_kind_count(StringKind::ConVar),
+                        self.string_kind_count(StringKind::SourcePath)
+                    ),
                 );
                 ui.end_row();
                 self.summary_card(
@@ -541,9 +558,10 @@ impl AnalysisApp {
 
             egui::Grid::new("strings_grid")
                 .striped(true)
-                .num_columns(4)
+                .num_columns(5)
                 .show(ui, |ui| {
                     ui.strong("Section");
+                    ui.strong("Kind");
                     ui.strong("RVA");
                     ui.strong("VA");
                     ui.strong("Value");
@@ -551,6 +569,7 @@ impl AnalysisApp {
 
                     for item in self.strings.iter().take(500) {
                         ui.monospace(&item.section);
+                        ui.label(format_string_kind(item.kind));
                         ui.monospace(format!("{:#010x}", item.rva));
                         ui.monospace(format!("{:#014x}", item.virtual_address));
                         ui.label(&item.value);
@@ -904,8 +923,12 @@ impl AnalysisApp {
         for item in self.strings.iter().take(80) {
             writeln!(
                 &mut report,
-                "  {:<10} rva={:#010x} va={:#014x} {}",
-                item.section, item.rva, item.virtual_address, item.value
+                "  {:<10} {:<16} rva={:#010x} va={:#014x} {}",
+                item.section,
+                format_string_kind(item.kind),
+                item.rva,
+                item.virtual_address,
+                item.value
             )
             .ok();
         }
@@ -970,8 +993,12 @@ impl AnalysisApp {
         for item in &self.strings {
             writeln!(
                 &mut out,
-                "{:<10} rva={:#010x} va={:#014x} {}",
-                item.section, item.rva, item.virtual_address, item.value
+                "{:<10} {:<16} rva={:#010x} va={:#014x} {}",
+                item.section,
+                format_string_kind(item.kind),
+                item.rva,
+                item.virtual_address,
+                item.value
             )
             .ok();
         }
@@ -1118,6 +1145,10 @@ impl AnalysisApp {
             .filter(|xref| xref.target_kind == kind)
             .count()
     }
+
+    fn string_kind_count(&self, kind: StringKind) -> usize {
+        self.strings.iter().filter(|item| item.kind == kind).count()
+    }
 }
 
 fn format_instruction_target(instruction: &DecodedInstruction) -> String {
@@ -1134,5 +1165,18 @@ fn format_cross_reference_kind(kind: CrossReferenceTargetKind) -> &'static str {
         CrossReferenceTargetKind::Code => "code",
         CrossReferenceTargetKind::Data => "data",
         CrossReferenceTargetKind::OutsideImage => "outside-image",
+    }
+}
+
+fn format_string_kind(kind: StringKind) -> &'static str {
+    match kind {
+        StringKind::InterfaceName => "interface",
+        StringKind::SchemaName => "schema",
+        StringKind::ClassName => "class",
+        StringKind::ConVar => "convar",
+        StringKind::SourcePath => "source-path",
+        StringKind::FormatString => "format",
+        StringKind::DecoratedSymbol => "decorated-symbol",
+        StringKind::Other => "other",
     }
 }

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
-    CrossReferenceTargetKind, ModuleImage, Pattern, build_auto_workspace_report,
+    CrossReferenceTargetKind, ModuleImage, Pattern, StringKind, build_auto_workspace_report,
     detect_cs2_environment, disassemble, extract_ascii_strings, load_symbol_map, load_symbols,
     parse_u64, run_signature_presets, scan_pattern,
 };
@@ -211,6 +211,32 @@ fn main() -> Result<()> {
                         .count()
                 );
                 println!("strings: {}", report.strings.len());
+                println!(
+                    "string anchors: {} interfaces, {} schema/classes, {} convars, {} source paths",
+                    report
+                        .strings
+                        .iter()
+                        .filter(|item| item.kind == StringKind::InterfaceName)
+                        .count(),
+                    report
+                        .strings
+                        .iter()
+                        .filter(|item| matches!(
+                            item.kind,
+                            StringKind::SchemaName | StringKind::ClassName
+                        ))
+                        .count(),
+                    report
+                        .strings
+                        .iter()
+                        .filter(|item| item.kind == StringKind::ConVar)
+                        .count(),
+                    report
+                        .strings
+                        .iter()
+                        .filter(|item| item.kind == StringKind::SourcePath)
+                        .count()
+                );
                 let signature_hits = report
                     .signature_findings
                     .iter()
@@ -319,8 +345,12 @@ fn main() -> Result<()> {
                 let total = strings.len();
                 for item in strings.iter().take(limit) {
                     println!(
-                        "{:<10} rva={:#010x} va={:#014x} {}",
-                        item.section, item.rva, item.virtual_address, item.value
+                        "{:<10} {:<16} rva={:#010x} va={:#014x} {}",
+                        item.section,
+                        format_string_kind(item.kind),
+                        item.rva,
+                        item.virtual_address,
+                        item.value
                     );
                 }
                 if total > limit {
@@ -379,5 +409,18 @@ fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String
         (Some(target), None) => format!("=> {target:#x}"),
         (None, Some(symbol)) => format!("=> {symbol}"),
         (None, None) => String::new(),
+    }
+}
+
+fn format_string_kind(kind: StringKind) -> &'static str {
+    match kind {
+        StringKind::InterfaceName => "interface",
+        StringKind::SchemaName => "schema",
+        StringKind::ClassName => "class",
+        StringKind::ConVar => "convar",
+        StringKind::SourcePath => "source-path",
+        StringKind::FormatString => "format",
+        StringKind::DecoratedSymbol => "decorated-symbol",
+        StringKind::Other => "other",
     }
 }

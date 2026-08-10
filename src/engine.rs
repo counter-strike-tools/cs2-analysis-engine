@@ -74,7 +74,20 @@ pub struct StringReference {
     pub rva: u64,
     pub virtual_address: u64,
     pub section: String,
+    pub kind: StringKind,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum StringKind {
+    InterfaceName,
+    SchemaName,
+    ClassName,
+    ConVar,
+    SourcePath,
+    FormatString,
+    DecoratedSymbol,
+    Other,
 }
 
 #[derive(Debug, Serialize)]
@@ -723,17 +736,65 @@ fn push_ascii_string(
 
     let value = String::from_utf8_lossy(&bytes[start..end]).to_string();
     let virtual_address = section_va + start as u64;
+    let kind = classify_string_value(&value);
 
     out.push(StringReference {
         rva: virtual_address.saturating_sub(image_base),
         virtual_address,
         section: section.to_string(),
+        kind,
         value,
     });
 }
 
 fn is_ascii_string_byte(byte: u8) -> bool {
     matches!(byte, 0x20..=0x7e)
+}
+
+pub fn classify_string_value(value: &str) -> StringKind {
+    let lower = value.to_ascii_lowercase();
+
+    if value.starts_with("Source2")
+        || value.starts_with('V') && value.chars().last().is_some_and(|ch| ch.is_ascii_digit())
+    {
+        return StringKind::InterfaceName;
+    }
+
+    if lower.contains("schema") || value.starts_with("C_") || value.starts_with("CCS") {
+        return StringKind::SchemaName;
+    }
+
+    if value.starts_with(".?AV") || value.starts_with(".?AU") || value.starts_with("??_7") {
+        return StringKind::DecoratedSymbol;
+    }
+
+    if value.starts_with('C')
+        && value.len() > 2
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '<' | '>' | '$'))
+        && value.chars().skip(1).any(|ch| ch.is_ascii_uppercase())
+    {
+        return StringKind::ClassName;
+    }
+
+    if lower.contains("convar") || lower.contains("concommand") || lower.starts_with("sv_") {
+        return StringKind::ConVar;
+    }
+
+    if value.contains(":\\")
+        || value.contains(":/")
+        || value.contains(".cpp")
+        || value.contains(".h")
+    {
+        return StringKind::SourcePath;
+    }
+
+    if value.contains("%s") || value.contains("%d") || value.contains("{}") {
+        return StringKind::FormatString;
+    }
+
+    StringKind::Other
 }
 
 pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
@@ -986,8 +1047,40 @@ mod tests {
         assert_eq!(strings[0].section, ".rdata");
         assert_eq!(strings[0].rva, 0x3001);
         assert_eq!(strings[0].virtual_address, 0x1800_3001);
+        assert_eq!(strings[0].kind, StringKind::InterfaceName);
         assert_eq!(strings[0].value, "Source2Client002");
         assert_eq!(strings[1].rva, 0x3016);
+        assert_eq!(strings[1].kind, StringKind::SchemaName);
         assert_eq!(strings[1].value, "C_CSPlayerPawn");
+    }
+
+    #[test]
+    fn classifies_cs2_relevant_string_values() {
+        assert_eq!(
+            classify_string_value("Source2Client002"),
+            StringKind::InterfaceName
+        );
+        assert_eq!(
+            classify_string_value("C_CSPlayerPawn"),
+            StringKind::SchemaName
+        );
+        assert_eq!(
+            classify_string_value(".?AVCGameEventSystem@@"),
+            StringKind::DecoratedSymbol
+        );
+        assert_eq!(classify_string_value("sv_cheats"), StringKind::ConVar);
+        assert_eq!(
+            classify_string_value("U:\\source2\\game\\client.cpp"),
+            StringKind::SourcePath
+        );
+        assert_eq!(
+            classify_string_value("failed: %s"),
+            StringKind::FormatString
+        );
+        assert_eq!(
+            classify_string_value("CHECK failed: this == other"),
+            StringKind::Other
+        );
+        assert_eq!(classify_string_value("plain text"), StringKind::Other);
     }
 }

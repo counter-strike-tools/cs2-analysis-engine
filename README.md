@@ -17,7 +17,7 @@ anti-cheat, inject code, or automate gameplay.
 - Module map for section browsing and focused disassembly.
 - RIP-relative target resolution in disassembly, with dumper-symbol annotations when available.
 - Cross-reference extraction from resolved disassembly targets, including target section and code/data/outside-image classification.
-- Offline printable string extraction from non-executable module sections for interface/schema/logging anchors.
+- Offline printable string extraction from non-executable module sections, with CS2-oriented classification for interfaces, schema names, classes, convars, source paths, format strings, and decorated symbols.
 - Signature scanner for offline module files.
 - Dumper-data browser for offsets, buttons, and interfaces.
 - Workspace report export for review and sharing.
