@@ -7,10 +7,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
     CrossReferenceTargetKind, ModuleImage, Pattern, PatternMatch, StringKind,
-    annotate_pattern_matches_with_strings, build_auto_workspace_report, detect_cs2_environment,
-    disassemble, extract_ascii_strings, filter_pattern_matches, fingerprint_detected_modules,
-    load_symbol_map, load_symbols, parse_string_kind_name, parse_u64, run_signature_presets,
-    scan_pattern,
+    annotate_pattern_matches_with_strings, build_auto_workspace_report, derive_runtime_symbols,
+    detect_cs2_environment, disassemble, extract_ascii_strings, filter_pattern_matches,
+    fingerprint_detected_modules, load_symbol_map, load_symbols, parse_string_kind_name, parse_u64,
+    run_signature_presets, scan_pattern,
 };
 use serde::Serialize;
 
@@ -134,6 +134,20 @@ enum Command {
         min_len: usize,
         /// Maximum text rows to print. JSON output always includes all strings.
         #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Auto-generate an in-memory runtime symbol dump from a CS2 module.
+    RuntimeSymbols {
+        /// Optional module file. If omitted, the best detected CS2 module is used.
+        module: Option<PathBuf>,
+        /// Minimum printable string length used for runtime string symbols.
+        #[arg(long, default_value_t = 5)]
+        min_len: usize,
+        /// Maximum text rows to print. JSON output always includes all symbols.
+        #[arg(long, default_value_t = 500)]
         limit: usize,
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -417,6 +431,46 @@ fn main() -> Result<()> {
 
             Ok(())
         }
+        Command::RuntimeSymbols {
+            module,
+            min_len,
+            limit,
+            json,
+        } => {
+            let module = module
+                .or_else(auto_selected_module)
+                .context("no module provided and no CS2 module candidate was auto-detected")?;
+            let image = ModuleImage::load(&module)?;
+            let strings = extract_ascii_strings(&image, min_len);
+            let findings = run_signature_presets(&image)?;
+            let symbols = derive_runtime_symbols(&image, &strings, &findings);
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&symbols)?);
+            } else {
+                println!("module: {}", module.display());
+                println!("runtime symbols: {}", symbols.len());
+                println!("strings scanned: {}", strings.len());
+                println!(
+                    "signature hits: {}",
+                    findings
+                        .iter()
+                        .map(|finding| finding.matches.len())
+                        .sum::<usize>()
+                );
+                for symbol in symbols.iter().take(limit) {
+                    println!(
+                        "{:<18} {:#014x} {}",
+                        symbol.module, symbol.value, symbol.name
+                    );
+                }
+                if symbols.len() > limit {
+                    println!("... {} more symbols", symbols.len() - limit);
+                }
+            }
+
+            Ok(())
+        }
         Command::Signatures { module, json } => {
             let image = ModuleImage::load(&module)?;
             let findings = run_signature_presets(&image)?;
@@ -458,6 +512,20 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn auto_selected_module() -> Option<PathBuf> {
+    let env = detect_cs2_environment();
+    ["client.dll", "engine2.dll"]
+        .into_iter()
+        .find_map(|name| {
+            env.module_candidates.iter().find(|path| {
+                path.file_name()
+                    .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+            })
+        })
+        .cloned()
+        .or_else(|| env.module_candidates.first().cloned())
 }
 
 fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String {

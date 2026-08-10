@@ -83,6 +83,12 @@ cs2-analysis-engine summary --string-min-len 8
 cs2-analysis-engine summary --json --out reports/summary.json
 ```
 
+Print the runtime-derived symbol dump without selecting `offsets.json`:
+
+```text
+cs2-analysis-engine runtime-symbols --min-len 8 --limit 100
+```
+
 Save a workspace report:
 
 ```text
