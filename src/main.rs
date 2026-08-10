@@ -156,6 +156,9 @@ enum Command {
         /// Keep only a symbol kind: string, signature, interface, schema, class, convar, source-path, format, or decorated.
         #[arg(long)]
         kind: Option<String>,
+        /// Sort generated symbols by address, name, or kind.
+        #[arg(long, value_enum, default_value_t = RuntimeSymbolSort::Address)]
+        sort: RuntimeSymbolSort,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -191,6 +194,14 @@ enum Command {
 enum OutputFormat {
     Text,
     Json,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RuntimeSymbolSort {
+    Address,
+    Name,
+    Kind,
 }
 
 fn main() -> Result<()> {
@@ -450,6 +461,7 @@ fn main() -> Result<()> {
             limit,
             contains,
             kind,
+            sort,
             json,
             envelope,
             out,
@@ -463,7 +475,8 @@ fn main() -> Result<()> {
             let symbols = derive_runtime_symbols(&image, &strings, &findings);
             let total_symbols = symbols.len();
             let total_summary = summarize_runtime_symbols(&symbols);
-            let symbols = filter_loaded_symbols(symbols, contains.as_deref(), kind.as_deref());
+            let mut symbols = filter_loaded_symbols(symbols, contains.as_deref(), kind.as_deref());
+            sort_runtime_symbols(&mut symbols, sort);
             let filtered_summary = summarize_runtime_symbols(&symbols);
 
             let output = if json {
@@ -473,6 +486,7 @@ fn main() -> Result<()> {
                         min_len,
                         contains: contains.clone(),
                         kind: kind.clone(),
+                        sort,
                         total_symbols,
                         filtered_symbols: symbols.len(),
                         total_summary: total_summary.clone(),
@@ -494,6 +508,7 @@ fn main() -> Result<()> {
                     total_symbols,
                     filtered_summary: &filtered_summary,
                     total_summary: &total_summary,
+                    sort,
                     strings_scanned: strings.len(),
                     signature_hits: findings
                         .iter()
@@ -569,12 +584,40 @@ fn auto_selected_module() -> Option<PathBuf> {
         .or_else(|| env.module_candidates.first().cloned())
 }
 
+fn sort_runtime_symbols(symbols: &mut [engine::LoadedSymbol], sort: RuntimeSymbolSort) {
+    match sort {
+        RuntimeSymbolSort::Address => symbols.sort_by(|a, b| {
+            a.value
+                .cmp(&b.value)
+                .then(a.module.cmp(&b.module))
+                .then(a.name.cmp(&b.name))
+        }),
+        RuntimeSymbolSort::Name => symbols.sort_by(|a, b| {
+            a.name
+                .cmp(&b.name)
+                .then(a.module.cmp(&b.module))
+                .then(a.value.cmp(&b.value))
+        }),
+        RuntimeSymbolSort::Kind => symbols.sort_by(|a, b| {
+            runtime_symbol_kind_key(&a.name)
+                .cmp(runtime_symbol_kind_key(&b.name))
+                .then(a.name.cmp(&b.name))
+                .then(a.value.cmp(&b.value))
+        }),
+    }
+}
+
+fn runtime_symbol_kind_key(name: &str) -> &str {
+    name.split(':').nth(1).unwrap_or(name)
+}
+
 #[derive(Serialize)]
 struct RuntimeSymbolDumpEnvelope {
     module: String,
     min_len: usize,
     contains: Option<String>,
     kind: Option<String>,
+    sort: RuntimeSymbolSort,
     total_symbols: usize,
     filtered_symbols: usize,
     total_summary: engine::RuntimeSymbolSummary,
@@ -590,6 +633,7 @@ struct RuntimeSymbolsText<'a> {
     total_symbols: usize,
     filtered_summary: &'a engine::RuntimeSymbolSummary,
     total_summary: &'a engine::RuntimeSymbolSummary,
+    sort: RuntimeSymbolSort,
     strings_scanned: usize,
     signature_hits: usize,
     limit: usize,
@@ -603,6 +647,7 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
         input.symbols.len(),
         input.total_symbols
     ));
+    lines.push(format!("sort: {:?}", input.sort));
     lines.push(format!(
         "runtime breakdown: strings={} signatures={} interfaces={} schemas={} classes={} convars={} source-paths={} formats={} decorated={} other={}",
         input.filtered_summary.strings,
