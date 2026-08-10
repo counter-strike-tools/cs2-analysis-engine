@@ -1,9 +1,9 @@
 mod engine;
 mod gui;
 
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
     CrossReferenceTargetKind, ModuleImage, Pattern, PatternMatch, StringKind,
@@ -38,6 +38,9 @@ enum Command {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+        /// Write the report to a file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// List executable and data sections from a PE/module file.
     Sections {
@@ -184,111 +187,23 @@ fn main() -> Result<()> {
 
             Ok(())
         }
-        Command::Workspace { disasm_len, json } => {
+        Command::Workspace {
+            disasm_len,
+            json,
+            out,
+        } => {
             let report = build_auto_workspace_report(disasm_len)?;
-
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+            let output = if json {
+                serde_json::to_string_pretty(&report)?
             } else {
-                println!("cs2.exe processes: {}", report.environment.processes.len());
-                println!("install roots: {}", report.environment.install_roots.len());
-                println!(
-                    "module candidates: {}",
-                    report.environment.module_candidates.len()
-                );
-                println!(
-                    "dump candidates: {}",
-                    report.environment.dump_candidates.len()
-                );
-                println!(
-                    "selected module: {}",
-                    report
-                        .selected_module
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "<none>".to_string())
-                );
-                println!(
-                    "selected dump: {}",
-                    report
-                        .selected_dump
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "<none>".to_string())
-                );
-                println!("sections: {}", report.sections.len());
-                if let Some(fingerprint) = &report.module_fingerprint {
-                    println!(
-                        "module fingerprint: {} size={} base={:#x}",
-                        fingerprint.file_name, fingerprint.size, fingerprint.image_base
-                    );
-                    println!("module sha256: {}", fingerprint.sha256);
-                }
-                println!("module inventory: {}", report.module_inventory.len());
-                for item in &report.module_inventory {
-                    println!(
-                        "  {:<18} size={:<10} base={:#x} sha256={}",
-                        item.file_name, item.size, item.image_base, item.sha256
-                    );
-                }
-                println!("symbols: {}", report.symbols.len());
-                println!("disassembly rows: {}", report.disassembly.len());
-                println!("cross references: {}", report.cross_references.len());
-                println!(
-                    "xref targets: {} code, {} data, {} outside-image",
-                    report
-                        .cross_references
-                        .iter()
-                        .filter(|xref| xref.target_kind == CrossReferenceTargetKind::Code)
-                        .count(),
-                    report
-                        .cross_references
-                        .iter()
-                        .filter(|xref| xref.target_kind == CrossReferenceTargetKind::Data)
-                        .count(),
-                    report
-                        .cross_references
-                        .iter()
-                        .filter(|xref| xref.target_kind == CrossReferenceTargetKind::OutsideImage)
-                        .count()
-                );
-                println!("strings: {}", report.strings.len());
-                println!(
-                    "string anchors: {} interfaces, {} schema/classes, {} convars, {} source paths",
-                    report
-                        .strings
-                        .iter()
-                        .filter(|item| item.kind == StringKind::InterfaceName)
-                        .count(),
-                    report
-                        .strings
-                        .iter()
-                        .filter(|item| matches!(
-                            item.kind,
-                            StringKind::SchemaName | StringKind::ClassName
-                        ))
-                        .count(),
-                    report
-                        .strings
-                        .iter()
-                        .filter(|item| item.kind == StringKind::ConVar)
-                        .count(),
-                    report
-                        .strings
-                        .iter()
-                        .filter(|item| item.kind == StringKind::SourcePath)
-                        .count()
-                );
-                let signature_hits = report
-                    .signature_findings
-                    .iter()
-                    .map(|finding| finding.matches.len())
-                    .sum::<usize>();
-                println!(
-                    "signature groups: {} hits: {}",
-                    report.signature_findings.len(),
-                    signature_hits
-                );
+                format_workspace_report_text(&report)
+            };
+
+            if let Some(path) = out {
+                write_report_file(&path, &output)?;
+                println!("wrote workspace report: {}", path.display());
+            } else {
+                println!("{output}");
             }
 
             Ok(())
@@ -510,6 +425,131 @@ fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String
         (None, Some(symbol)) => format!("=> {symbol}"),
         (None, None) => String::new(),
     }
+}
+
+fn format_workspace_report_text(report: &engine::WorkspaceReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "cs2.exe processes: {}",
+        report.environment.processes.len()
+    ));
+    lines.push(format!(
+        "install roots: {}",
+        report.environment.install_roots.len()
+    ));
+    lines.push(format!(
+        "module candidates: {}",
+        report.environment.module_candidates.len()
+    ));
+    lines.push(format!(
+        "dump candidates: {}",
+        report.environment.dump_candidates.len()
+    ));
+    lines.push(format!(
+        "selected module: {}",
+        report
+            .selected_module
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    ));
+    lines.push(format!(
+        "selected dump: {}",
+        report
+            .selected_dump
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    ));
+    lines.push(format!("sections: {}", report.sections.len()));
+    if let Some(fingerprint) = &report.module_fingerprint {
+        lines.push(format!(
+            "module fingerprint: {} size={} base={:#x}",
+            fingerprint.file_name, fingerprint.size, fingerprint.image_base
+        ));
+        lines.push(format!("module sha256: {}", fingerprint.sha256));
+    }
+    lines.push(format!(
+        "module inventory: {}",
+        report.module_inventory.len()
+    ));
+    for item in &report.module_inventory {
+        lines.push(format!(
+            "  {:<18} size={:<10} base={:#x} sha256={}",
+            item.file_name, item.size, item.image_base, item.sha256
+        ));
+    }
+    lines.push(format!("symbols: {}", report.symbols.len()));
+    lines.push(format!("disassembly rows: {}", report.disassembly.len()));
+    lines.push(format!(
+        "cross references: {}",
+        report.cross_references.len()
+    ));
+    lines.push(format!(
+        "xref targets: {} code, {} data, {} outside-image",
+        report
+            .cross_references
+            .iter()
+            .filter(|xref| xref.target_kind == CrossReferenceTargetKind::Code)
+            .count(),
+        report
+            .cross_references
+            .iter()
+            .filter(|xref| xref.target_kind == CrossReferenceTargetKind::Data)
+            .count(),
+        report
+            .cross_references
+            .iter()
+            .filter(|xref| xref.target_kind == CrossReferenceTargetKind::OutsideImage)
+            .count()
+    ));
+    lines.push(format!("strings: {}", report.strings.len()));
+    lines.push(format!(
+        "string anchors: {} interfaces, {} schema/classes, {} convars, {} source paths",
+        report
+            .strings
+            .iter()
+            .filter(|item| item.kind == StringKind::InterfaceName)
+            .count(),
+        report
+            .strings
+            .iter()
+            .filter(|item| matches!(item.kind, StringKind::SchemaName | StringKind::ClassName))
+            .count(),
+        report
+            .strings
+            .iter()
+            .filter(|item| item.kind == StringKind::ConVar)
+            .count(),
+        report
+            .strings
+            .iter()
+            .filter(|item| item.kind == StringKind::SourcePath)
+            .count()
+    ));
+    let signature_hits = report
+        .signature_findings
+        .iter()
+        .map(|finding| finding.matches.len())
+        .sum::<usize>();
+    lines.push(format!(
+        "signature groups: {} hits: {}",
+        report.signature_findings.len(),
+        signature_hits
+    ));
+    lines.join("\n")
+}
+
+fn write_report_file(path: &PathBuf, contents: &str) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create report directory {}", parent.display()))?;
+    }
+
+    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn parse_required_string_kind(input: &str) -> Result<StringKind> {

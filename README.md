@@ -75,6 +75,13 @@ Build a full auto workspace report:
 cs2-analysis-engine workspace
 ```
 
+Save a workspace report:
+
+```text
+cs2-analysis-engine workspace --out reports/workspace.txt
+cs2-analysis-engine workspace --json --out reports/workspace.json
+```
+
 List sections:
 
 ```text
