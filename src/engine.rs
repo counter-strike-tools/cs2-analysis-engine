@@ -113,6 +113,7 @@ pub struct WorkspaceReport {
     pub health: WorkspaceHealth,
     pub sections: Vec<SectionInfo>,
     pub symbols: Vec<LoadedSymbol>,
+    pub runtime_symbols: Vec<LoadedSymbol>,
     pub disassembly: Vec<DecodedInstruction>,
     pub cross_references: Vec<CrossReference>,
     pub strings: Vec<StringReference>,
@@ -965,17 +966,22 @@ pub fn build_auto_workspace_report(
     let mut strings = Vec::new();
     let mut module_fingerprint = None;
     let mut symbols = Vec::new();
+    let mut runtime_symbols = Vec::new();
     let mut symbol_map = SymbolMap::default();
 
     if let Some(dump) = &selected_dump {
         symbols = load_symbols(dump, None).unwrap_or_default();
-        symbol_map = load_symbol_map(dump).unwrap_or_default();
+        symbol_map.extend_loaded_symbols(&symbols);
     }
 
     if let Some(module_path) = &selected_module {
         let image = ModuleImage::load(module_path)?;
         module_fingerprint = Some(image.fingerprint());
         sections = image.sections()?;
+        strings = extract_ascii_strings(&image, string_min_len);
+        signature_findings = run_signature_presets(&image)?;
+        runtime_symbols = derive_runtime_symbols(&image, &strings, &signature_findings);
+        symbol_map.extend_loaded_symbols(&runtime_symbols);
         if let Some(section) = sections
             .iter()
             .find(|section| section.executable)
@@ -984,8 +990,6 @@ pub fn build_auto_workspace_report(
             disassembly = disassemble(&image, section.address, disasm_len, &symbol_map)?;
             cross_references = extract_cross_references(&disassembly, &sections);
         }
-        strings = extract_ascii_strings(&image, string_min_len);
-        signature_findings = run_signature_presets(&image)?;
     }
 
     let health = build_workspace_health(
@@ -1007,6 +1011,7 @@ pub fn build_auto_workspace_report(
         health,
         sections,
         symbols,
+        runtime_symbols,
         disassembly,
         cross_references,
         strings,
@@ -1093,15 +1098,112 @@ pub struct LoadedSymbol {
     pub value: u64,
 }
 
+impl SymbolMap {
+    pub fn insert(&mut self, value: u64, label: String) {
+        self.symbols.entry(value).or_default().push(label);
+    }
+
+    pub fn extend_loaded_symbols(&mut self, symbols: &[LoadedSymbol]) {
+        for symbol in symbols {
+            self.insert(symbol.value, format!("{}!{}", symbol.module, symbol.name));
+        }
+    }
+}
+
 pub fn load_symbol_map(dump: &Path) -> Result<SymbolMap> {
     let mut map = SymbolMap::default();
-    for symbol in load_symbols(dump, None)? {
-        map.symbols
-            .entry(symbol.value)
-            .or_default()
-            .push(format!("{}!{}", symbol.module, symbol.name));
-    }
+    map.extend_loaded_symbols(&load_symbols(dump, None)?);
     Ok(map)
+}
+
+pub fn derive_runtime_symbols(
+    image: &ModuleImage,
+    strings: &[StringReference],
+    signature_findings: &[SignatureFinding],
+) -> Vec<LoadedSymbol> {
+    let module = image
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "module".to_string());
+    derive_runtime_symbols_for_module(module, strings, signature_findings)
+}
+
+fn derive_runtime_symbols_for_module(
+    module: String,
+    strings: &[StringReference],
+    signature_findings: &[SignatureFinding],
+) -> Vec<LoadedSymbol> {
+    let mut symbols: BTreeMap<(u64, String), LoadedSymbol> = BTreeMap::new();
+
+    for item in strings
+        .iter()
+        .filter(|item| item.kind != StringKind::Other)
+        .take(4096)
+    {
+        let name = format!(
+            "runtime-string:{}:{}",
+            string_kind_slug(item.kind),
+            sanitize_symbol_fragment(&item.value)
+        );
+        symbols.insert(
+            (item.virtual_address, name.clone()),
+            LoadedSymbol {
+                module: module.clone(),
+                name,
+                value: item.virtual_address,
+            },
+        );
+    }
+
+    for finding in signature_findings {
+        for (index, item) in finding.matches.iter().take(2048).enumerate() {
+            let name = format!(
+                "runtime-signature:{}:{index:04}",
+                sanitize_symbol_fragment(&finding.signature)
+            );
+            symbols.insert(
+                (item.virtual_address, name.clone()),
+                LoadedSymbol {
+                    module: module.clone(),
+                    name,
+                    value: item.virtual_address,
+                },
+            );
+        }
+    }
+
+    symbols.into_values().collect()
+}
+
+fn string_kind_slug(kind: StringKind) -> &'static str {
+    match kind {
+        StringKind::InterfaceName => "interface",
+        StringKind::SchemaName => "schema",
+        StringKind::ClassName => "class",
+        StringKind::ConVar => "convar",
+        StringKind::SourcePath => "source-path",
+        StringKind::FormatString => "format",
+        StringKind::DecoratedSymbol => "decorated",
+        StringKind::Other => "other",
+    }
+}
+
+fn sanitize_symbol_fragment(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars().take(80) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '<' | '>') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+
+    if out.is_empty() {
+        "unnamed".to_string()
+    } else {
+        out
+    }
 }
 
 pub fn load_symbols(dump: &Path, module_filter: Option<&str>) -> Result<Vec<LoadedSymbol>> {
@@ -1421,6 +1523,74 @@ mod tests {
             Some(StringKind::DecoratedSymbol)
         );
         assert_eq!(parse_string_kind_name("not-a-kind"), None);
+    }
+
+    #[test]
+    fn symbol_map_merges_loaded_symbols() {
+        let mut map = SymbolMap::default();
+        map.extend_loaded_symbols(&[LoadedSymbol {
+            module: "client.dll".to_string(),
+            name: "runtime-string:interface:Source2Client002".to_string(),
+            value: 0x1800_3000,
+        }]);
+
+        assert_eq!(
+            map.symbols
+                .get(&0x1800_3000)
+                .and_then(|items| items.first())
+                .map(String::as_str),
+            Some("client.dll!runtime-string:interface:Source2Client002")
+        );
+    }
+
+    #[test]
+    fn runtime_symbols_are_derived_from_strings_and_signature_hits() {
+        let strings = vec![
+            StringReference {
+                rva: 0x3000,
+                virtual_address: 0x1800_3000,
+                section: ".rdata".to_string(),
+                kind: StringKind::InterfaceName,
+                value: "Source2Client002".to_string(),
+            },
+            StringReference {
+                rva: 0x3010,
+                virtual_address: 0x1800_3010,
+                section: ".rdata".to_string(),
+                kind: StringKind::Other,
+                value: "plain text".to_string(),
+            },
+        ];
+        let findings = vec![SignatureFinding {
+            signature: "rip relative load".to_string(),
+            module_hint: "client.dll".to_string(),
+            pattern: "48 8B 05 ?? ?? ?? ??".to_string(),
+            description: "test".to_string(),
+            matches: vec![PatternMatch {
+                rva: 0x1000,
+                virtual_address: 0x1800_1000,
+                section: ".text".to_string(),
+                nearby_string: None,
+            }],
+        }];
+        let symbols =
+            derive_runtime_symbols_for_module("client.dll".to_string(), &strings, &findings);
+
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "runtime-string:interface:Source2Client002")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "runtime-signature:rip_relative_load:0000")
+        );
+        assert!(
+            symbols
+                .iter()
+                .all(|symbol| !symbol.name.contains("plain_text"))
+        );
     }
 
     #[test]

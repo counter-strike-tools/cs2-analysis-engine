@@ -6,10 +6,10 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 use crate::engine::{
     CrossReference, CrossReferenceTargetKind, Cs2Environment, DecodedInstruction, LoadedSymbol,
     ModuleImage, Pattern, PatternMatch, SectionInfo, SignatureFinding, StringKind, StringReference,
-    SymbolMap, annotate_pattern_matches_with_strings, detect_cs2_environment, disassemble,
-    extract_ascii_strings, extract_cross_references, filter_pattern_matches,
-    fingerprint_detected_modules, load_symbol_map, load_symbols, parse_string_kind_name, parse_u64,
-    run_signature_presets, scan_pattern,
+    SymbolMap, annotate_pattern_matches_with_strings, derive_runtime_symbols,
+    detect_cs2_environment, disassemble, extract_ascii_strings, extract_cross_references,
+    filter_pattern_matches, fingerprint_detected_modules, load_symbol_map, load_symbols,
+    parse_string_kind_name, parse_u64, run_signature_presets, scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -65,6 +65,7 @@ struct AnalysisApp {
     strings: Vec<StringReference>,
     scan_matches: Vec<PatternMatch>,
     signature_findings: Vec<SignatureFinding>,
+    runtime_symbols: Vec<LoadedSymbol>,
     status: String,
     output: String,
     active_tab: Tab,
@@ -104,6 +105,7 @@ impl Default for AnalysisApp {
             strings: Vec::new(),
             scan_matches: Vec::new(),
             signature_findings: Vec::new(),
+            runtime_symbols: Vec::new(),
             status: String::new(),
             output: String::new(),
             active_tab: Tab::Overview,
@@ -773,6 +775,8 @@ impl AnalysisApp {
                     self.strings.clear();
                     self.scan_matches.clear();
                     self.signature_findings.clear();
+                    self.runtime_symbols.clear();
+                    self.rebuild_symbol_map();
                     self.status = format!("Loaded module with {} sections.", self.sections.len());
                     self.auto_disassemble_loaded_module();
                 }
@@ -789,6 +793,7 @@ impl AnalysisApp {
                 self.status = format!("Loaded {} symbols.", symbols.len());
                 self.symbols = symbols;
                 self.symbol_map = symbol_map;
+                self.rebuild_symbol_map();
                 self.active_tab = Tab::DumperData;
                 self.build_symbol_output();
             }
@@ -883,6 +888,7 @@ impl AnalysisApp {
         };
 
         self.strings = extract_ascii_strings(module, 5);
+        self.refresh_runtime_symbols();
         self.status = format!("Extracted {} strings.", self.strings.len());
         self.active_tab = Tab::Strings;
         self.build_string_output();
@@ -906,11 +912,31 @@ impl AnalysisApp {
                     hits
                 );
                 self.signature_findings = findings;
+                self.refresh_runtime_symbols();
                 self.active_tab = Tab::Signatures;
                 self.build_signature_output();
             }
             Err(err) => self.set_error(err),
         }
+    }
+
+    fn refresh_runtime_symbols(&mut self) {
+        let Some(module) = &self.module else {
+            self.runtime_symbols.clear();
+            self.rebuild_symbol_map();
+            return;
+        };
+
+        self.runtime_symbols =
+            derive_runtime_symbols(module, &self.strings, &self.signature_findings);
+        self.rebuild_symbol_map();
+    }
+
+    fn rebuild_symbol_map(&mut self) {
+        let mut symbol_map = SymbolMap::default();
+        symbol_map.extend_loaded_symbols(&self.symbols);
+        symbol_map.extend_loaded_symbols(&self.runtime_symbols);
+        self.symbol_map = symbol_map;
     }
 
     fn build_report(&mut self) {
@@ -986,6 +1012,12 @@ impl AnalysisApp {
         }
 
         writeln!(&mut report, "symbols: {}", self.symbols.len()).ok();
+        writeln!(
+            &mut report,
+            "runtime symbols: {}",
+            self.runtime_symbols.len()
+        )
+        .ok();
         writeln!(
             &mut report,
             "last disassembly rows: {}",
@@ -1105,6 +1137,17 @@ impl AnalysisApp {
             )
             .ok();
         }
+        if !self.runtime_symbols.is_empty() {
+            writeln!(&mut out, "\nruntime-derived symbols").ok();
+            for symbol in self.runtime_symbols.iter().take(500) {
+                writeln!(
+                    &mut out,
+                    "{:<18} {:#014x} {}",
+                    symbol.module, symbol.value, symbol.name
+                )
+                .ok();
+            }
+        }
         self.output = out;
     }
 
@@ -1218,9 +1261,10 @@ impl AnalysisApp {
             if self.disasm_len.trim().is_empty() {
                 self.disasm_len = "512".to_string();
             }
-            self.run_disassembly();
             self.run_string_extraction();
             self.run_signature_findings();
+            self.refresh_runtime_symbols();
+            self.run_disassembly();
         }
     }
 

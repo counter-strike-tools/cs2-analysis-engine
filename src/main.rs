@@ -536,6 +536,7 @@ fn format_workspace_report_text(report: &engine::WorkspaceReport) -> String {
         ));
     }
     lines.push(format!("symbols: {}", report.symbols.len()));
+    lines.push(format!("runtime symbols: {}", report.runtime_symbols.len()));
     lines.push(format!("disassembly rows: {}", report.disassembly.len()));
     lines.push(format!(
         "cross references: {}",
@@ -605,6 +606,7 @@ struct WorkspaceSummary {
     module_inventory_count: usize,
     sections: usize,
     symbols: usize,
+    runtime_symbols: usize,
     disassembly_rows: usize,
     cross_references: usize,
     strings: usize,
@@ -630,6 +632,7 @@ fn build_workspace_summary(report: &engine::WorkspaceReport) -> WorkspaceSummary
         module_inventory_count: report.module_inventory.len(),
         sections: report.sections.len(),
         symbols: report.symbols.len(),
+        runtime_symbols: report.runtime_symbols.len(),
         disassembly_rows: report.disassembly.len(),
         cross_references: report.cross_references.len(),
         strings: report.strings.len(),
@@ -663,10 +666,11 @@ fn format_workspace_summary_text(report: &engine::WorkspaceReport) -> String {
         summary.module_sha256.as_deref().unwrap_or("<none>")
     ));
     lines.push(format!(
-        "coverage: modules={} sections={} symbols={} disasm={} xrefs={} strings={} signatures={}/{}",
+        "coverage: modules={} sections={} symbols={} runtime-symbols={} disasm={} xrefs={} strings={} signatures={}/{}",
         summary.module_inventory_count,
         summary.sections,
         summary.symbols,
+        summary.runtime_symbols,
         summary.disassembly_rows,
         summary.cross_references,
         summary.strings,

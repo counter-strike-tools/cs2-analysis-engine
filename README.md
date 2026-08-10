@@ -12,7 +12,7 @@ anti-cheat, inject code, or automate gameplay.
 - Module fingerprinting with file size, image base, and SHA-256 for reproducible reports.
 - Detected module inventory that fingerprints all auto-discovered CS2 module candidates.
 - Auto-detection of existing `cs2-dumper` output folders without asking the user to browse.
-- Startup auto-workspace that loads detected dump symbols, loads the best CS2 module candidate, and disassembles the first code section.
+- Startup auto-workspace that derives an in-memory runtime symbol dump from the detected CS2 module, then loads optional external dump symbols when present.
 - Workspace health summary with coverage counts and warnings for missing module, dump, disassembly, strings, or signature data.
 - Recursive workspace scan for `offsets.json` / `output/json/offsets.json` under nearby project folders.
 - Built-in offline signature finders for common x64/RIP-relative/module-analysis patterns.
@@ -24,7 +24,7 @@ anti-cheat, inject code, or automate gameplay.
 - Cross-reference extraction from resolved disassembly targets, including target section and code/data/outside-image classification.
 - Offline printable string extraction from non-executable module sections, with CS2-oriented classification for interfaces, schema names, classes, convars, source paths, format strings, and decorated symbols.
 - Signature scanner for offline module files.
-- Dumper-data browser for offsets, buttons, and interfaces.
+- Runtime-derived symbol browser for string anchors and signature hits, plus optional dumper-data browsing for offsets, buttons, and interfaces.
 - Workspace report export for review and sharing.
 - PE/module section listing.
 - x86-64 disassembly over a virtual-address or RVA range.
@@ -45,8 +45,8 @@ Instead, it maps those workflows to safe CS2-specific analysis:
 | Memory viewer | Offline module map and section browser |
 | Disassembler | Offline x86-64 disassembly from module files |
 | Array-of-byte scan | Offline section-aware signature scanner |
-| Cheat tables | Auto-loaded `cs2-dumper` JSON symbol workspace |
-| Pointer/symbol notes | Dumper offsets, buttons, interfaces, and reports |
+| Cheat tables | Auto-built in-memory module symbol workspace |
+| Pointer/symbol notes | Runtime-derived string/signature symbols, optional dumper offsets, buttons, interfaces, and reports |
 | Trainers/memory edits | Not implemented |
 | Kernel/debug bypasses | Not implemented |
 
