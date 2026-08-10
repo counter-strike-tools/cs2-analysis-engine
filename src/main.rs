@@ -12,6 +12,7 @@ use engine::{
     load_symbol_map, load_symbols, parse_string_kind_name, parse_u64, run_signature_presets,
     scan_pattern,
 };
+use serde::Serialize;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -39,6 +40,18 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Write the report to a file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Print a compact auto-workspace health and coverage summary.
+    Summary {
+        /// Number of bytes to disassemble from the selected executable section.
+        #[arg(long, default_value_t = 512)]
+        disasm_len: u64,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+        /// Write the summary to a file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -202,6 +215,27 @@ fn main() -> Result<()> {
             if let Some(path) = out {
                 write_report_file(&path, &output)?;
                 println!("wrote workspace report: {}", path.display());
+            } else {
+                println!("{output}");
+            }
+
+            Ok(())
+        }
+        Command::Summary {
+            disasm_len,
+            json,
+            out,
+        } => {
+            let report = build_auto_workspace_report(disasm_len)?;
+            let output = if json {
+                serde_json::to_string_pretty(&build_workspace_summary(&report))?
+            } else {
+                format_workspace_summary_text(&report)
+            };
+
+            if let Some(path) = out {
+                write_report_file(&path, &output)?;
+                println!("wrote workspace summary: {}", path.display());
             } else {
                 println!("{output}");
             }
@@ -551,6 +585,87 @@ fn format_workspace_report_text(report: &engine::WorkspaceReport) -> String {
         report.signature_findings.len(),
         signature_hits
     ));
+    lines.join("\n")
+}
+
+#[derive(Serialize)]
+struct WorkspaceSummary {
+    health: engine::WorkspaceHealth,
+    selected_module: Option<String>,
+    selected_dump: Option<String>,
+    module_sha256: Option<String>,
+    module_inventory_count: usize,
+    sections: usize,
+    symbols: usize,
+    disassembly_rows: usize,
+    cross_references: usize,
+    strings: usize,
+    signature_groups: usize,
+    signature_hits: usize,
+}
+
+fn build_workspace_summary(report: &engine::WorkspaceReport) -> WorkspaceSummary {
+    WorkspaceSummary {
+        health: report.health.clone(),
+        selected_module: report
+            .selected_module
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        selected_dump: report
+            .selected_dump
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        module_sha256: report
+            .module_fingerprint
+            .as_ref()
+            .map(|fingerprint| fingerprint.sha256.clone()),
+        module_inventory_count: report.module_inventory.len(),
+        sections: report.sections.len(),
+        symbols: report.symbols.len(),
+        disassembly_rows: report.disassembly.len(),
+        cross_references: report.cross_references.len(),
+        strings: report.strings.len(),
+        signature_groups: report.signature_findings.len(),
+        signature_hits: report
+            .signature_findings
+            .iter()
+            .map(|finding| finding.matches.len())
+            .sum(),
+    }
+}
+
+fn format_workspace_summary_text(report: &engine::WorkspaceReport) -> String {
+    let summary = build_workspace_summary(report);
+    let mut lines = Vec::new();
+
+    lines.push(format!("health: {:?}", summary.health.status));
+    for warning in &summary.health.warnings {
+        lines.push(format!("warning: {warning}"));
+    }
+    lines.push(format!(
+        "selected module: {}",
+        summary.selected_module.as_deref().unwrap_or("<none>")
+    ));
+    lines.push(format!(
+        "selected dump: {}",
+        summary.selected_dump.as_deref().unwrap_or("<none>")
+    ));
+    lines.push(format!(
+        "module sha256: {}",
+        summary.module_sha256.as_deref().unwrap_or("<none>")
+    ));
+    lines.push(format!(
+        "coverage: modules={} sections={} symbols={} disasm={} xrefs={} strings={} signatures={}/{}",
+        summary.module_inventory_count,
+        summary.sections,
+        summary.symbols,
+        summary.disassembly_rows,
+        summary.cross_references,
+        summary.strings,
+        summary.signature_groups,
+        summary.signature_hits
+    ));
+
     lines.join("\n")
 }
 

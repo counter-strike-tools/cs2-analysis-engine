@@ -76,6 +76,13 @@ Build a full auto workspace report:
 cs2-analysis-engine workspace
 ```
 
+Print a compact workspace summary:
+
+```text
+cs2-analysis-engine summary
+cs2-analysis-engine summary --json --out reports/summary.json
+```
+
 Save a workspace report:
 
 ```text
