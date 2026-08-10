@@ -367,6 +367,10 @@ impl AnalysisApp {
                         .as_str(),
                 );
                 ui.end_row();
+                let health = self.workspace_health_snapshot();
+                self.summary_card(ui, "Workspace health", health.0.as_str());
+                self.summary_card(ui, "Health warnings", &health.1.to_string());
+                ui.end_row();
                 self.summary_card(ui, "Sections", &self.sections.len().to_string());
                 self.summary_card(ui, "Dumper symbols", &self.symbols.len().to_string());
                 ui.end_row();
@@ -913,6 +917,9 @@ impl AnalysisApp {
         let mut report = String::new();
         writeln!(&mut report, "CS2 Analysis Engine report").ok();
         writeln!(&mut report, "scope: read-only offline analysis").ok();
+        let health = self.workspace_health_snapshot();
+        writeln!(&mut report, "workspace health: {}", health.0).ok();
+        writeln!(&mut report, "health warnings: {}", health.1).ok();
         writeln!(
             &mut report,
             "detected processes: {}",
@@ -1226,6 +1233,38 @@ impl AnalysisApp {
 
     fn string_kind_count(&self, kind: StringKind) -> usize {
         self.strings.iter().filter(|item| item.kind == kind).count()
+    }
+
+    fn workspace_health_snapshot(&self) -> (String, usize) {
+        let mut warnings = 0;
+        if self.module.is_none() {
+            warnings += 1;
+        }
+        if self.symbols.is_empty() {
+            warnings += 1;
+        }
+        if self.sections.is_empty() {
+            warnings += 1;
+        }
+        if self.instructions.is_empty() {
+            warnings += 1;
+        }
+        if self.strings.is_empty() {
+            warnings += 1;
+        }
+        if self.signature_findings.is_empty() {
+            warnings += 1;
+        }
+
+        let status = if self.module.is_none() && self.symbols.is_empty() {
+            "Empty"
+        } else if warnings == 0 {
+            "Ready"
+        } else {
+            "Partial"
+        };
+
+        (status.to_string(), warnings)
     }
 }
 

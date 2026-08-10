@@ -110,12 +110,33 @@ pub struct WorkspaceReport {
     pub selected_dump: Option<PathBuf>,
     pub module_fingerprint: Option<ModuleFingerprint>,
     pub module_inventory: Vec<ModuleFingerprint>,
+    pub health: WorkspaceHealth,
     pub sections: Vec<SectionInfo>,
     pub symbols: Vec<LoadedSymbol>,
     pub disassembly: Vec<DecodedInstruction>,
     pub cross_references: Vec<CrossReference>,
     pub strings: Vec<StringReference>,
     pub signature_findings: Vec<SignatureFinding>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceHealth {
+    pub status: WorkspaceHealthStatus,
+    pub warnings: Vec<String>,
+    pub module_loaded: bool,
+    pub dump_loaded: bool,
+    pub disassembly_rows: usize,
+    pub cross_references: usize,
+    pub strings: usize,
+    pub signature_groups: usize,
+    pub signature_hits: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum WorkspaceHealthStatus {
+    Ready,
+    Partial,
+    Empty,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -964,12 +985,23 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
         signature_findings = run_signature_presets(&image)?;
     }
 
+    let health = build_workspace_health(
+        selected_module.is_some(),
+        selected_dump.is_some(),
+        &sections,
+        &disassembly,
+        &cross_references,
+        &strings,
+        &signature_findings,
+    );
+
     Ok(WorkspaceReport {
         environment,
         selected_module,
         selected_dump,
         module_fingerprint,
         module_inventory,
+        health,
         sections,
         symbols,
         disassembly,
@@ -977,6 +1009,61 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
         strings,
         signature_findings,
     })
+}
+
+pub fn build_workspace_health(
+    module_loaded: bool,
+    dump_loaded: bool,
+    sections: &[SectionInfo],
+    disassembly: &[DecodedInstruction],
+    cross_references: &[CrossReference],
+    strings: &[StringReference],
+    signature_findings: &[SignatureFinding],
+) -> WorkspaceHealth {
+    let signature_hits = signature_findings
+        .iter()
+        .map(|finding| finding.matches.len())
+        .sum::<usize>();
+    let mut warnings = Vec::new();
+
+    if !module_loaded {
+        warnings.push("no CS2 module was auto-loaded".to_string());
+    }
+    if !dump_loaded {
+        warnings.push("no cs2-dumper output was auto-detected".to_string());
+    }
+    if sections.is_empty() {
+        warnings.push("no module sections were parsed".to_string());
+    }
+    if disassembly.is_empty() {
+        warnings.push("no disassembly rows were decoded".to_string());
+    }
+    if strings.is_empty() {
+        warnings.push("no printable strings were extracted".to_string());
+    }
+    if signature_hits == 0 {
+        warnings.push("built-in signatures produced no hits".to_string());
+    }
+
+    let status = if !module_loaded && !dump_loaded {
+        WorkspaceHealthStatus::Empty
+    } else if warnings.is_empty() {
+        WorkspaceHealthStatus::Ready
+    } else {
+        WorkspaceHealthStatus::Partial
+    };
+
+    WorkspaceHealth {
+        status,
+        warnings,
+        module_loaded,
+        dump_loaded,
+        disassembly_rows: disassembly.len(),
+        cross_references: cross_references.len(),
+        strings: strings.len(),
+        signature_groups: signature_findings.len(),
+        signature_hits,
+    }
 }
 
 fn select_best_module(candidates: &[PathBuf]) -> Option<&PathBuf> {
@@ -1355,5 +1442,61 @@ mod tests {
         };
 
         assert!(fingerprint_detected_modules(&environment).is_empty());
+    }
+
+    #[test]
+    fn workspace_health_reports_empty_without_module_or_dump() {
+        let health = build_workspace_health(false, false, &[], &[], &[], &[], &[]);
+
+        assert_eq!(health.status, WorkspaceHealthStatus::Empty);
+        assert!(!health.warnings.is_empty());
+        assert!(!health.module_loaded);
+        assert!(!health.dump_loaded);
+    }
+
+    #[test]
+    fn workspace_health_reports_ready_when_analysis_has_coverage() {
+        let sections = test_sections();
+        let disassembly = vec![DecodedInstruction {
+            address: 0x1800_1000,
+            bytes: "90".to_string(),
+            text: "nop".to_string(),
+            symbol: None,
+            rip_target: None,
+            target_symbol: None,
+        }];
+        let strings = vec![StringReference {
+            rva: 0x3000,
+            virtual_address: 0x1800_3000,
+            section: ".rdata".to_string(),
+            kind: StringKind::Other,
+            value: "ready".to_string(),
+        }];
+        let signatures = vec![SignatureFinding {
+            signature: "test".to_string(),
+            module_hint: "any".to_string(),
+            pattern: "90".to_string(),
+            description: "test signature".to_string(),
+            matches: vec![PatternMatch {
+                rva: 0x1000,
+                virtual_address: 0x1800_1000,
+                section: ".text".to_string(),
+                nearby_string: None,
+            }],
+        }];
+
+        let health = build_workspace_health(
+            true,
+            true,
+            &sections,
+            &disassembly,
+            &[],
+            &strings,
+            &signatures,
+        );
+
+        assert_eq!(health.status, WorkspaceHealthStatus::Ready);
+        assert!(health.warnings.is_empty());
+        assert_eq!(health.signature_hits, 1);
     }
 }

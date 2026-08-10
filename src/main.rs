@@ -429,6 +429,20 @@ fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String
 
 fn format_workspace_report_text(report: &engine::WorkspaceReport) -> String {
     let mut lines = Vec::new();
+    lines.push(format!("workspace health: {:?}", report.health.status));
+    for warning in &report.health.warnings {
+        lines.push(format!("  warning: {warning}"));
+    }
+    lines.push(format!(
+        "health coverage: module={} dump={} disasm={} xrefs={} strings={} signatures={}/{}",
+        report.health.module_loaded,
+        report.health.dump_loaded,
+        report.health.disassembly_rows,
+        report.health.cross_references,
+        report.health.strings,
+        report.health.signature_groups,
+        report.health.signature_hits
+    ));
     lines.push(format!(
         "cs2.exe processes: {}",
         report.environment.processes.len()

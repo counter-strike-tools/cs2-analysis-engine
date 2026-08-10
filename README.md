@@ -13,6 +13,7 @@ anti-cheat, inject code, or automate gameplay.
 - Detected module inventory that fingerprints all auto-discovered CS2 module candidates.
 - Auto-detection of existing `cs2-dumper` output folders without asking the user to browse.
 - Startup auto-workspace that loads detected dump symbols, loads the best CS2 module candidate, and disassembles the first code section.
+- Workspace health summary with coverage counts and warnings for missing module, dump, disassembly, strings, or signature data.
 - Recursive workspace scan for `offsets.json` / `output/json/offsets.json` under nearby project folders.
 - Built-in offline signature finders for common x64/RIP-relative/module-analysis patterns.
 - Pattern and signature hits include section names and nearby extracted string anchors when available.
