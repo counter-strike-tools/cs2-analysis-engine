@@ -73,13 +73,13 @@ cs2-analysis-engine detect
 Build a full auto workspace report:
 
 ```text
-cs2-analysis-engine workspace
+cs2-analysis-engine workspace --string-min-len 5
 ```
 
 Print a compact workspace summary:
 
 ```text
-cs2-analysis-engine summary
+cs2-analysis-engine summary --string-min-len 8
 cs2-analysis-engine summary --json --out reports/summary.json
 ```
 

@@ -36,6 +36,9 @@ enum Command {
         /// Number of bytes to disassemble from the selected executable section.
         #[arg(long, default_value_t = 512)]
         disasm_len: u64,
+        /// Minimum printable string length for workspace string extraction.
+        #[arg(long, default_value_t = 5)]
+        string_min_len: usize,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -48,6 +51,9 @@ enum Command {
         /// Number of bytes to disassemble from the selected executable section.
         #[arg(long, default_value_t = 512)]
         disasm_len: u64,
+        /// Minimum printable string length for workspace string extraction.
+        #[arg(long, default_value_t = 5)]
+        string_min_len: usize,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -202,10 +208,11 @@ fn main() -> Result<()> {
         }
         Command::Workspace {
             disasm_len,
+            string_min_len,
             json,
             out,
         } => {
-            let report = build_auto_workspace_report(disasm_len)?;
+            let report = build_auto_workspace_report(disasm_len, string_min_len)?;
             let output = if json {
                 serde_json::to_string_pretty(&report)?
             } else {
@@ -223,10 +230,11 @@ fn main() -> Result<()> {
         }
         Command::Summary {
             disasm_len,
+            string_min_len,
             json,
             out,
         } => {
-            let report = build_auto_workspace_report(disasm_len)?;
+            let report = build_auto_workspace_report(disasm_len, string_min_len)?;
             let output = if json {
                 serde_json::to_string_pretty(&build_workspace_summary(&report))?
             } else {

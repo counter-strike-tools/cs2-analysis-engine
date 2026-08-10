@@ -949,7 +949,10 @@ pub fn classify_string_value(value: &str) -> StringKind {
     StringKind::Other
 }
 
-pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
+pub fn build_auto_workspace_report(
+    disasm_len: u64,
+    string_min_len: usize,
+) -> Result<WorkspaceReport> {
     let environment = detect_cs2_environment();
     let selected_module = select_best_module(&environment.module_candidates).cloned();
     let selected_dump = environment.dump_candidates.first().cloned();
@@ -981,7 +984,7 @@ pub fn build_auto_workspace_report(disasm_len: u64) -> Result<WorkspaceReport> {
             disassembly = disassemble(&image, section.address, disasm_len, &symbol_map)?;
             cross_references = extract_cross_references(&disassembly, &sections);
         }
-        strings = extract_ascii_strings(&image, 5);
+        strings = extract_ascii_strings(&image, string_min_len);
         signature_findings = run_signature_presets(&image)?;
     }
 
