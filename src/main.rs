@@ -483,6 +483,7 @@ fn main() -> Result<()> {
                 if envelope {
                     serde_json::to_string_pretty(&RuntimeSymbolDumpEnvelope {
                         module: module.display().to_string(),
+                        module_base: image.base,
                         min_len,
                         contains: contains.clone(),
                         kind: kind.clone(),
@@ -504,6 +505,7 @@ fn main() -> Result<()> {
             } else {
                 format_runtime_symbols_text(RuntimeSymbolsText {
                     module: &module,
+                    module_base: image.base,
                     symbols: &symbols,
                     total_symbols,
                     filtered_summary: &filtered_summary,
@@ -611,9 +613,14 @@ fn runtime_symbol_kind_key(name: &str) -> &str {
     name.split(':').nth(1).unwrap_or(name)
 }
 
+fn symbol_rva(module_base: u64, value: u64) -> u64 {
+    value.saturating_sub(module_base)
+}
+
 #[derive(Serialize)]
 struct RuntimeSymbolDumpEnvelope {
     module: String,
+    module_base: u64,
     min_len: usize,
     contains: Option<String>,
     kind: Option<String>,
@@ -629,6 +636,7 @@ struct RuntimeSymbolDumpEnvelope {
 
 struct RuntimeSymbolsText<'a> {
     module: &'a PathBuf,
+    module_base: u64,
     symbols: &'a [engine::LoadedSymbol],
     total_symbols: usize,
     filtered_summary: &'a engine::RuntimeSymbolSummary,
@@ -642,6 +650,7 @@ struct RuntimeSymbolsText<'a> {
 fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
     let mut lines = Vec::new();
     lines.push(format!("module: {}", input.module.display()));
+    lines.push(format!("module base: {:#x}", input.module_base));
     lines.push(format!(
         "runtime symbols: {} of {}",
         input.symbols.len(),
@@ -681,8 +690,11 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
 
     for symbol in input.symbols.iter().take(input.limit) {
         lines.push(format!(
-            "{:<18} {:#014x} {}",
-            symbol.module, symbol.value, symbol.name
+            "{:<18} va={:#014x} rva={:#010x} {}",
+            symbol.module,
+            symbol.value,
+            symbol_rva(input.module_base, symbol.value),
+            symbol.name
         ));
     }
     if input.symbols.len() > input.limit {

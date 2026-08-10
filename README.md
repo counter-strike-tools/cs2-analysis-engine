@@ -94,7 +94,7 @@ cs2-analysis-engine runtime-symbols --json --out reports/runtime-symbols.json
 cs2-analysis-engine runtime-symbols --json --envelope --out reports/runtime-symbol-workspace.json
 ```
 
-The runtime symbol dump prints a source/kind breakdown so filtered output can be compared with the full generated workspace.
+The runtime symbol dump prints a source/kind breakdown and module-base/RVA context so filtered output can be compared with the full generated workspace.
 
 Save a workspace report:
 
