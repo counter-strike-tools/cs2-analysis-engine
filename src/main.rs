@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{
     ModuleImage, Pattern, detect_cs2_environment, disassemble, load_symbol_map, load_symbols,
-    parse_u64, scan_pattern,
+    parse_u64, run_signature_presets, scan_pattern,
 };
 
 #[derive(Parser)]
@@ -61,6 +61,14 @@ enum Command {
         module: PathBuf,
         /// Hex pattern, for example: "48 8B ?? ?? 89".
         pattern: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run built-in offline signature finders against a module.
+    Signatures {
+        /// Path to a module file such as client.dll.
+        module: PathBuf,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -193,6 +201,30 @@ fn main() -> Result<()> {
             } else {
                 for item in matches {
                     println!("rva={:#x} va={:#x}", item.rva, item.virtual_address);
+                }
+            }
+
+            Ok(())
+        }
+        Command::Signatures { module, json } => {
+            let image = ModuleImage::load(&module)?;
+            let findings = run_signature_presets(&image)?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&findings)?);
+            } else {
+                for finding in findings {
+                    println!(
+                        "{} [{}] {} matches",
+                        finding.signature,
+                        finding.module_hint,
+                        finding.matches.len()
+                    );
+                    println!("  pattern: {}", finding.pattern);
+                    println!("  {}", finding.description);
+                    for item in finding.matches.iter().take(20) {
+                        println!("    rva={:#x} va={:#x}", item.rva, item.virtual_address);
+                    }
                 }
             }
 

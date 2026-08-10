@@ -5,8 +5,8 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use crate::engine::{
     Cs2Environment, DecodedInstruction, LoadedSymbol, ModuleImage, Pattern, PatternMatch,
-    SectionInfo, SymbolMap, detect_cs2_environment, disassemble, load_symbol_map, load_symbols,
-    parse_u64, scan_pattern,
+    SectionInfo, SignatureFinding, SymbolMap, detect_cs2_environment, disassemble, load_symbol_map,
+    load_symbols, parse_u64, run_signature_presets, scan_pattern,
 };
 
 pub fn run_gui() -> Result<()> {
@@ -56,6 +56,7 @@ struct AnalysisApp {
     scan_pattern_text: String,
     instructions: Vec<DecodedInstruction>,
     scan_matches: Vec<PatternMatch>,
+    signature_findings: Vec<SignatureFinding>,
     status: String,
     output: String,
     active_tab: Tab,
@@ -88,6 +89,7 @@ impl Default for AnalysisApp {
             scan_pattern_text: String::new(),
             instructions: Vec::new(),
             scan_matches: Vec::new(),
+            signature_findings: Vec::new(),
             status: String::new(),
             output: String::new(),
             active_tab: Tab::Overview,
@@ -360,6 +362,22 @@ impl AnalysisApp {
                 );
                 self.summary_card(ui, "Disassembly rows", &self.instructions.len().to_string());
                 ui.end_row();
+                self.summary_card(
+                    ui,
+                    "Signature groups",
+                    &self.signature_findings.len().to_string(),
+                );
+                self.summary_card(
+                    ui,
+                    "Signature hits",
+                    &self
+                        .signature_findings
+                        .iter()
+                        .map(|finding| finding.matches.len())
+                        .sum::<usize>()
+                        .to_string(),
+                );
+                ui.end_row();
             });
 
         ui.add_space(18.0);
@@ -376,6 +394,9 @@ impl AnalysisApp {
             }
             if ui.button("Disassemble entry section").clicked() {
                 self.run_disassembly();
+            }
+            if ui.button("Find built-in signatures").clicked() {
+                self.run_signature_findings();
             }
             if ui.button("Build report").clicked() {
                 self.build_report();
@@ -450,6 +471,9 @@ impl AnalysisApp {
             if ui.button("Scan sections").clicked() {
                 self.run_scan();
             }
+            if ui.button("Run built-in finders").clicked() {
+                self.run_signature_findings();
+            }
             if ui.button("Copy matches").clicked() {
                 ui.ctx().copy_text(self.output.clone());
             }
@@ -459,6 +483,29 @@ impl AnalysisApp {
         ui.label(
             "Scans the loaded module file by section and reports RVAs/VAs. Wildcards use ? or ??.",
         );
+        if !self.signature_findings.is_empty() {
+            ui.add_space(8.0);
+            ui.heading("Built-in signature findings");
+            egui::Grid::new("signature_finding_grid")
+                .striped(true)
+                .num_columns(4)
+                .show(ui, |ui| {
+                    ui.strong("Signature");
+                    ui.strong("Hint");
+                    ui.strong("Matches");
+                    ui.strong("Pattern");
+                    ui.end_row();
+
+                    for finding in &self.signature_findings {
+                        ui.label(&finding.signature);
+                        ui.label(&finding.module_hint);
+                        ui.label(finding.matches.len().to_string());
+                        ui.monospace(&finding.pattern);
+                        ui.end_row();
+                    }
+                });
+            ui.separator();
+        }
         egui::ScrollArea::both().id_salt("scan").show(ui, |ui| {
             if self.scan_matches.is_empty() {
                 ui.label("Pattern matches will appear here.");
@@ -559,6 +606,7 @@ impl AnalysisApp {
                     self.sections = sections;
                     self.instructions.clear();
                     self.scan_matches.clear();
+                    self.signature_findings.clear();
                     self.status = format!("Loaded module with {} sections.", self.sections.len());
                     self.auto_disassemble_loaded_module();
                 }
@@ -634,6 +682,31 @@ impl AnalysisApp {
         }
     }
 
+    fn run_signature_findings(&mut self) {
+        let Some(module) = &self.module else {
+            self.status = "Load a module before running signature finders.".to_string();
+            return;
+        };
+
+        match run_signature_presets(module) {
+            Ok(findings) => {
+                let hits = findings
+                    .iter()
+                    .map(|finding| finding.matches.len())
+                    .sum::<usize>();
+                self.status = format!(
+                    "Ran {} signature groups and found {} total hits.",
+                    findings.len(),
+                    hits
+                );
+                self.signature_findings = findings;
+                self.active_tab = Tab::Signatures;
+                self.build_signature_output();
+            }
+            Err(err) => self.set_error(err),
+        }
+    }
+
     fn build_report(&mut self) {
         let mut report = String::new();
         writeln!(&mut report, "CS2 Analysis Engine report").ok();
@@ -699,6 +772,21 @@ impl AnalysisApp {
             self.scan_matches.len()
         )
         .ok();
+        writeln!(
+            &mut report,
+            "signature groups: {}",
+            self.signature_findings.len()
+        )
+        .ok();
+        writeln!(
+            &mut report,
+            "signature hits: {}",
+            self.signature_findings
+                .iter()
+                .map(|finding| finding.matches.len())
+                .sum::<usize>()
+        )
+        .ok();
         self.output = report;
     }
 
@@ -740,6 +828,31 @@ impl AnalysisApp {
                 symbol.module, symbol.value, symbol.name
             )
             .ok();
+        }
+        self.output = out;
+    }
+
+    fn build_signature_output(&mut self) {
+        let mut out = String::new();
+        for finding in &self.signature_findings {
+            writeln!(
+                &mut out,
+                "{} [{}] {} matches",
+                finding.signature,
+                finding.module_hint,
+                finding.matches.len()
+            )
+            .ok();
+            writeln!(&mut out, "  pattern: {}", finding.pattern).ok();
+            writeln!(&mut out, "  {}", finding.description).ok();
+            for item in finding.matches.iter().take(50) {
+                writeln!(
+                    &mut out,
+                    "    rva={:#x} va={:#x}",
+                    item.rva, item.virtual_address
+                )
+                .ok();
+            }
         }
         self.output = out;
     }
@@ -835,6 +948,7 @@ impl AnalysisApp {
                 self.disasm_len = "512".to_string();
             }
             self.run_disassembly();
+            self.run_signature_findings();
         }
     }
 }

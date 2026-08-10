@@ -33,6 +33,23 @@ pub struct PatternMatch {
     pub virtual_address: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SignaturePreset {
+    pub name: &'static str,
+    pub module_hint: &'static str,
+    pub pattern: &'static str,
+    pub description: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SignatureFinding {
+    pub signature: String,
+    pub module_hint: String,
+    pub pattern: String,
+    pub description: String,
+    pub matches: Vec<PatternMatch>,
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct SymbolMap {
     pub symbols: BTreeMap<u64, Vec<String>>,
@@ -182,7 +199,7 @@ fn find_dumper_output_candidates() -> Vec<PathBuf> {
         roots.push(parent.to_path_buf());
     }
 
-    for root in roots {
+    for root in roots.clone() {
         let paths = [
             root.join("output"),
             root.join("cs2-dumper").join("output"),
@@ -197,11 +214,66 @@ fn find_dumper_output_candidates() -> Vec<PathBuf> {
         }
     }
 
+    for root in roots {
+        find_dumper_outputs_recursive(&root, 4, &mut candidates);
+    }
+
     candidates
 }
 
 fn is_dumper_output(path: &Path) -> bool {
     path.join("json").join("offsets.json").exists() || path.join("offsets.json").exists()
+}
+
+fn find_dumper_outputs_recursive(root: &Path, depth: usize, candidates: &mut Vec<PathBuf>) {
+    if depth == 0 || !root.exists() {
+        return;
+    }
+
+    if is_dumper_output(root) {
+        let normalized = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        if !candidates.contains(&normalized) {
+            candidates.push(normalized);
+        }
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let Some(name) = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        else {
+            continue;
+        };
+
+        if matches!(
+            name.as_str(),
+            ".git" | "target" | "build" | "dist" | "node_modules" | "fixtures"
+        ) {
+            continue;
+        }
+
+        if name == "json" && path.join("offsets.json").exists() {
+            if let Some(parent) = path.parent() {
+                let normalized = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+                if !candidates.contains(&normalized) {
+                    candidates.push(normalized);
+                }
+            }
+            continue;
+        }
+
+        find_dumper_outputs_recursive(&path, depth - 1, candidates);
+    }
 }
 
 impl ModuleImage {
@@ -379,6 +451,70 @@ pub fn scan_pattern(image: &ModuleImage, pattern: &Pattern) -> Vec<PatternMatch>
     }
 
     matches
+}
+
+pub fn signature_presets() -> Vec<SignaturePreset> {
+    vec![
+        SignaturePreset {
+            name: "x64 function prologue",
+            module_hint: "any",
+            pattern: "48 89 5C 24 ?? 57 48 83 EC ??",
+            description: "Common MSVC x64 function entry sequence.",
+        },
+        SignaturePreset {
+            name: "rip relative load",
+            module_hint: "client.dll",
+            pattern: "48 8B 05 ?? ?? ?? ??",
+            description: "RIP-relative pointer load often used around globals and interfaces.",
+        },
+        SignaturePreset {
+            name: "rip relative lea",
+            module_hint: "client.dll",
+            pattern: "48 8D 0D ?? ?? ?? ??",
+            description: "RIP-relative address calculation candidate.",
+        },
+        SignaturePreset {
+            name: "virtual call site",
+            module_hint: "any",
+            pattern: "48 8B 01 FF 50 ??",
+            description: "Simple virtual dispatch pattern.",
+        },
+        SignaturePreset {
+            name: "schema string reference setup",
+            module_hint: "schemasystem.dll",
+            pattern: "48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ??",
+            description: "Adjacent RIP-relative address setup useful near schema-related string references.",
+        },
+    ]
+}
+
+pub fn run_signature_preset(
+    image: &ModuleImage,
+    preset: &SignaturePreset,
+) -> Result<SignatureFinding> {
+    let pattern = Pattern::parse(preset.pattern)?;
+    Ok(SignatureFinding {
+        signature: preset.name.to_string(),
+        module_hint: preset.module_hint.to_string(),
+        pattern: preset.pattern.to_string(),
+        description: preset.description.to_string(),
+        matches: scan_pattern(image, &pattern),
+    })
+}
+
+pub fn run_signature_presets(image: &ModuleImage) -> Result<Vec<SignatureFinding>> {
+    signature_presets()
+        .into_iter()
+        .filter(|preset| {
+            preset.module_hint == "any" || module_name_matches(&image.path, preset.module_hint)
+        })
+        .map(|preset| run_signature_preset(image, &preset))
+        .collect()
+}
+
+fn module_name_matches(path: &Path, hint: &str) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(hint))
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -11,6 +11,8 @@ anti-cheat, inject code, or automate gameplay.
 - Read-only CS2 context detection for running `cs2.exe` process entries, Steam install roots, and module candidates.
 - Auto-detection of existing `cs2-dumper` output folders without asking the user to browse.
 - Startup auto-workspace that loads detected dump symbols, loads the best CS2 module candidate, and disassembles the first code section.
+- Recursive workspace scan for `offsets.json` / `output/json/offsets.json` under nearby project folders.
+- Built-in offline signature finders for common x64/RIP-relative/module-analysis patterns.
 - Quick-load CS2 module candidates such as `client.dll`, `engine2.dll`, `schemasystem.dll`, `tier0.dll`, and `vstdlib.dll`.
 - Module map for section browsing and focused disassembly.
 - Signature scanner for offline module files.
@@ -82,6 +84,12 @@ Scan for a byte pattern:
 
 ```text
 cs2-analysis-engine scan client.dll "48 8B ?? ?? 89"
+```
+
+Run built-in signature finders:
+
+```text
+cs2-analysis-engine signatures client.dll
 ```
 
 List known dumper symbols:
