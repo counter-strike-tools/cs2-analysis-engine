@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use iced_x86::{Decoder, DecoderOptions, Formatter, Instruction, NasmFormatter};
+use iced_x86::{Decoder, DecoderOptions, Formatter, Instruction, NasmFormatter, Register};
 use object::{Object, ObjectSection};
 use serde::Serialize;
 use sysinfo::System;
@@ -25,6 +25,8 @@ pub struct DecodedInstruction {
     pub bytes: String,
     pub text: String,
     pub symbol: Option<String>,
+    pub rip_target: Option<u64>,
+    pub target_symbol: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -388,16 +390,31 @@ pub fn disassemble(
             .symbols
             .get(&instruction.ip())
             .map(|items| items.join(", "));
+        let rip_target = rip_relative_target(&instruction);
+        let target_symbol = rip_target
+            .and_then(|target| symbols.symbols.get(&target).map(|items| items.join(", ")));
 
         instructions.push(DecodedInstruction {
             address: instruction.ip(),
             bytes: spaced,
             text: output.clone(),
             symbol,
+            rip_target,
+            target_symbol,
         });
     }
 
     Ok(instructions)
+}
+
+fn rip_relative_target(instruction: &Instruction) -> Option<u64> {
+    (0..instruction.op_count())
+        .find(|operand| {
+            instruction.op_register(*operand) == Register::RIP
+                || instruction.memory_base() == Register::RIP
+        })
+        .map(|_| instruction.ip_rel_memory_address())
+        .filter(|target| *target != 0)
 }
 
 #[derive(Debug, Clone)]

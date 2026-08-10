@@ -230,12 +230,15 @@ fn main() -> Result<()> {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&instructions)?),
                 OutputFormat::Text => {
                     for instruction in instructions {
-                        if let Some(symbol) = instruction.symbol {
+                        if let Some(symbol) = &instruction.symbol {
                             println!("\n{}:", symbol);
                         }
                         println!(
-                            "{:#014x}  {:<28} {}",
-                            instruction.address, instruction.bytes, instruction.text
+                            "{:#014x}  {:<28} {:<42} {}",
+                            instruction.address,
+                            instruction.bytes,
+                            instruction.text,
+                            format_instruction_target(&instruction)
                         );
                     }
                 }
@@ -304,5 +307,14 @@ fn main() -> Result<()> {
 
             Ok(())
         }
+    }
+}
+
+fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String {
+    match (instruction.rip_target, instruction.target_symbol.as_deref()) {
+        (Some(target), Some(symbol)) => format!("=> {target:#x} {symbol}"),
+        (Some(target), None) => format!("=> {target:#x}"),
+        (None, Some(symbol)) => format!("=> {symbol}"),
+        (None, None) => String::new(),
     }
 }

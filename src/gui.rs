@@ -442,11 +442,12 @@ impl AnalysisApp {
 
             egui::Grid::new("instruction_grid")
                 .striped(true)
-                .num_columns(4)
+                .num_columns(5)
                 .show(ui, |ui| {
                     ui.strong("Address");
                     ui.strong("Bytes");
                     ui.strong("Instruction");
+                    ui.strong("Target");
                     ui.strong("Symbol");
                     ui.end_row();
 
@@ -454,6 +455,7 @@ impl AnalysisApp {
                         ui.monospace(format!("{:#014x}", instruction.address));
                         ui.monospace(&instruction.bytes);
                         ui.monospace(&instruction.text);
+                        ui.monospace(format_instruction_target(instruction));
                         ui.label(instruction.symbol.as_deref().unwrap_or(""));
                         ui.end_row();
                     }
@@ -798,8 +800,11 @@ impl AnalysisApp {
             }
             writeln!(
                 &mut out,
-                "{:#014x}  {:<28} {}",
-                instruction.address, instruction.bytes, instruction.text
+                "{:#014x}  {:<28} {:<42} {}",
+                instruction.address,
+                instruction.bytes,
+                instruction.text,
+                format_instruction_target(instruction)
             )
             .ok();
         }
@@ -950,5 +955,14 @@ impl AnalysisApp {
             self.run_disassembly();
             self.run_signature_findings();
         }
+    }
+}
+
+fn format_instruction_target(instruction: &DecodedInstruction) -> String {
+    match (instruction.rip_target, instruction.target_symbol.as_deref()) {
+        (Some(target), Some(symbol)) => format!("=> {target:#x} {symbol}"),
+        (Some(target), None) => format!("=> {target:#x}"),
+        (None, Some(symbol)) => format!("=> {symbol}"),
+        (None, None) => String::new(),
     }
 }

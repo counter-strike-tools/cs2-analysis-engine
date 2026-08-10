@@ -15,6 +15,7 @@ anti-cheat, inject code, or automate gameplay.
 - Built-in offline signature finders for common x64/RIP-relative/module-analysis patterns.
 - Quick-load CS2 module candidates such as `client.dll`, `engine2.dll`, `schemasystem.dll`, `tier0.dll`, and `vstdlib.dll`.
 - Module map for section browsing and focused disassembly.
+- RIP-relative target resolution in disassembly, with dumper-symbol annotations when available.
 - Signature scanner for offline module files.
 - Dumper-data browser for offsets, buttons, and interfaces.
 - Workspace report export for review and sharing.
