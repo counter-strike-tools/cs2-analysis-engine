@@ -159,6 +159,9 @@ enum Command {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+        /// With --json, include module, filters, summaries, and symbols in one object.
+        #[arg(long)]
+        envelope: bool,
         /// Write the generated symbol dump to a file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -448,6 +451,7 @@ fn main() -> Result<()> {
             contains,
             kind,
             json,
+            envelope,
             out,
         } => {
             let module = module
@@ -463,7 +467,26 @@ fn main() -> Result<()> {
             let filtered_summary = summarize_runtime_symbols(&symbols);
 
             let output = if json {
-                serde_json::to_string_pretty(&symbols)?
+                if envelope {
+                    serde_json::to_string_pretty(&RuntimeSymbolDumpEnvelope {
+                        module: module.display().to_string(),
+                        min_len,
+                        contains: contains.clone(),
+                        kind: kind.clone(),
+                        total_symbols,
+                        filtered_symbols: symbols.len(),
+                        total_summary: total_summary.clone(),
+                        filtered_summary: filtered_summary.clone(),
+                        strings_scanned: strings.len(),
+                        signature_hits: findings
+                            .iter()
+                            .map(|finding| finding.matches.len())
+                            .sum::<usize>(),
+                        symbols: symbols.clone(),
+                    })?
+                } else {
+                    serde_json::to_string_pretty(&symbols)?
+                }
             } else {
                 format_runtime_symbols_text(RuntimeSymbolsText {
                     module: &module,
@@ -544,6 +567,21 @@ fn auto_selected_module() -> Option<PathBuf> {
         })
         .cloned()
         .or_else(|| env.module_candidates.first().cloned())
+}
+
+#[derive(Serialize)]
+struct RuntimeSymbolDumpEnvelope {
+    module: String,
+    min_len: usize,
+    contains: Option<String>,
+    kind: Option<String>,
+    total_symbols: usize,
+    filtered_symbols: usize,
+    total_summary: engine::RuntimeSymbolSummary,
+    filtered_summary: engine::RuntimeSymbolSummary,
+    strings_scanned: usize,
+    signature_hits: usize,
+    symbols: Vec<engine::LoadedSymbol>,
 }
 
 struct RuntimeSymbolsText<'a> {
