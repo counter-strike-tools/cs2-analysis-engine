@@ -474,6 +474,7 @@ fn main() -> Result<()> {
             csv_metadata,
             out,
         } => {
+            validate_runtime_symbol_output_options(json, envelope, csv, csv_metadata)?;
             let module = module
                 .or_else(auto_selected_module)
                 .context("no module provided and no CS2 module candidate was auto-detected")?;
@@ -610,6 +611,25 @@ fn auto_selected_module() -> Option<PathBuf> {
         })
         .cloned()
         .or_else(|| env.module_candidates.first().cloned())
+}
+
+fn validate_runtime_symbol_output_options(
+    json: bool,
+    envelope: bool,
+    csv: bool,
+    csv_metadata: bool,
+) -> Result<()> {
+    if json && csv {
+        anyhow::bail!("--json and --csv cannot be used together");
+    }
+    if envelope && !json {
+        anyhow::bail!("--envelope requires --json");
+    }
+    if csv_metadata && !csv {
+        anyhow::bail!("--csv-metadata requires --csv");
+    }
+
+    Ok(())
 }
 
 fn sort_runtime_symbols(symbols: &mut [engine::LoadedSymbol], sort: RuntimeSymbolSort) {
@@ -1209,5 +1229,26 @@ mod tests {
         assert_eq!(csv_escape("plain"), "plain");
         assert_eq!(csv_escape("needs,quote"), "\"needs,quote\"");
         assert_eq!(csv_escape("has \"quote\""), "\"has \"\"quote\"\"\"");
+    }
+
+    #[test]
+    fn runtime_symbol_output_options_reject_conflicting_modes() {
+        let err = validate_runtime_symbol_output_options(true, false, true, false).unwrap_err();
+        assert!(err.to_string().contains("--json and --csv"));
+
+        let err = validate_runtime_symbol_output_options(false, true, false, false).unwrap_err();
+        assert!(err.to_string().contains("--envelope requires --json"));
+
+        let err = validate_runtime_symbol_output_options(false, false, false, true).unwrap_err();
+        assert!(err.to_string().contains("--csv-metadata requires --csv"));
+    }
+
+    #[test]
+    fn runtime_symbol_output_options_allow_each_valid_mode() {
+        validate_runtime_symbol_output_options(false, false, false, false).unwrap();
+        validate_runtime_symbol_output_options(true, false, false, false).unwrap();
+        validate_runtime_symbol_output_options(true, true, false, false).unwrap();
+        validate_runtime_symbol_output_options(false, false, true, false).unwrap();
+        validate_runtime_symbol_output_options(false, false, true, true).unwrap();
     }
 }
