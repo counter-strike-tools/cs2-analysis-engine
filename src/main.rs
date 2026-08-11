@@ -203,6 +203,9 @@ enum Command {
         /// Maximum text rows to print for each signature group. JSON output includes all filtered matches.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Omit signature groups with zero matches after filtering.
+        #[arg(long)]
+        hide_empty: bool,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -641,6 +644,7 @@ fn main() -> Result<()> {
             module,
             section,
             limit,
+            hide_empty,
             json,
             out,
         } => {
@@ -648,15 +652,24 @@ fn main() -> Result<()> {
                 .or_else(auto_selected_module)
                 .context("no module provided and no CS2 module candidate was auto-detected")?;
             let image = ModuleImage::load(&module)?;
-            let findings = filter_signature_findings_by_section(
+            let mut findings = filter_signature_findings_by_section(
                 run_signature_presets(&image)?,
                 section.as_deref(),
             );
+            if hide_empty {
+                findings.retain(|finding| !finding.matches.is_empty());
+            }
 
             let output = if json {
                 serde_json::to_string_pretty(&findings)?
             } else {
-                format_signature_findings_text(&module, section.as_deref(), limit, &findings)
+                format_signature_findings_text(
+                    &module,
+                    section.as_deref(),
+                    hide_empty,
+                    limit,
+                    &findings,
+                )
             };
 
             if let Some(path) = out {
@@ -1201,13 +1214,17 @@ fn filter_signature_findings_by_section(
 fn format_signature_findings_text(
     module: &PathBuf,
     section: Option<&str>,
+    hide_empty: bool,
     limit: usize,
     findings: &[engine::SignatureFinding],
 ) -> String {
+    let total_matches = signature_finding_match_count(findings);
     let mut lines = Vec::new();
     lines.push(format!("module: {}", module.display()));
     lines.push(format!("section filter: {}", section.unwrap_or("<none>")));
+    lines.push(format!("hide empty groups: {hide_empty}"));
     lines.push(format!("signature groups: {}", findings.len()));
+    lines.push(format!("signature matches: {total_matches}"));
 
     for finding in findings {
         lines.push(format!(
@@ -1230,6 +1247,10 @@ fn format_signature_findings_text(
     }
 
     lines.join("\n")
+}
+
+fn signature_finding_match_count(findings: &[engine::SignatureFinding]) -> usize {
+    findings.iter().map(|finding| finding.matches.len()).sum()
 }
 
 fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String {
@@ -1831,6 +1852,43 @@ mod tests {
     }
 
     #[test]
+    fn signature_findings_can_hide_empty_groups_after_filtering() {
+        let mut findings = filter_signature_findings_by_section(
+            vec![
+                engine::SignatureFinding {
+                    signature: "has_text".to_string(),
+                    module_hint: "client.dll".to_string(),
+                    pattern: "48 8D ??".to_string(),
+                    description: "test preset".to_string(),
+                    matches: vec![engine::PatternMatch {
+                        rva: 0x1000,
+                        virtual_address: 0x1800_1000,
+                        section: ".text".to_string(),
+                        nearby_string: None,
+                    }],
+                },
+                engine::SignatureFinding {
+                    signature: "data_only".to_string(),
+                    module_hint: "client.dll".to_string(),
+                    pattern: "48 8B ??".to_string(),
+                    description: "test preset".to_string(),
+                    matches: vec![engine::PatternMatch {
+                        rva: 0x3000,
+                        virtual_address: 0x1800_3000,
+                        section: ".rdata".to_string(),
+                        nearby_string: None,
+                    }],
+                },
+            ],
+            Some(".text"),
+        );
+        findings.retain(|finding| !finding.matches.is_empty());
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].signature, "has_text");
+    }
+
+    #[test]
     fn signature_text_reports_filters_and_truncation() {
         let findings = vec![engine::SignatureFinding {
             signature: "rip_relative_lea".to_string(),
@@ -1856,14 +1914,57 @@ mod tests {
         let text = format_signature_findings_text(
             &PathBuf::from("client.dll"),
             Some(".text"),
+            true,
             1,
             &findings,
         );
 
         assert!(text.contains("module: client.dll"));
         assert!(text.contains("section filter: .text"));
+        assert!(text.contains("hide empty groups: true"));
+        assert!(text.contains("signature matches: 2"));
         assert!(text.contains("rip_relative_lea [client.dll] 2 matches"));
         assert!(text.contains("... 1 more matches"));
+    }
+
+    #[test]
+    fn signature_match_count_sums_all_groups() {
+        let findings = vec![
+            engine::SignatureFinding {
+                signature: "one".to_string(),
+                module_hint: "any".to_string(),
+                pattern: "90".to_string(),
+                description: "test preset".to_string(),
+                matches: vec![engine::PatternMatch {
+                    rva: 0x1000,
+                    virtual_address: 0x1800_1000,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                }],
+            },
+            engine::SignatureFinding {
+                signature: "two".to_string(),
+                module_hint: "any".to_string(),
+                pattern: "90 90".to_string(),
+                description: "test preset".to_string(),
+                matches: vec![
+                    engine::PatternMatch {
+                        rva: 0x1010,
+                        virtual_address: 0x1800_1010,
+                        section: ".text".to_string(),
+                        nearby_string: None,
+                    },
+                    engine::PatternMatch {
+                        rva: 0x1020,
+                        virtual_address: 0x1800_1020,
+                        section: ".text".to_string(),
+                        nearby_string: None,
+                    },
+                ],
+            },
+        ];
+
+        assert_eq!(signature_finding_match_count(&findings), 3);
     }
 
     #[test]
