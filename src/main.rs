@@ -206,6 +206,9 @@ enum Command {
         /// Omit signature groups with zero matches after filtering.
         #[arg(long)]
         hide_empty: bool,
+        /// Omit signature groups with fewer than this many matches after filtering.
+        #[arg(long, default_value_t = 0)]
+        min_matches: usize,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -648,6 +651,7 @@ fn main() -> Result<()> {
             section,
             limit,
             hide_empty,
+            min_matches,
             json,
             envelope,
             out,
@@ -664,6 +668,9 @@ fn main() -> Result<()> {
             if hide_empty {
                 findings.retain(|finding| !finding.matches.is_empty());
             }
+            if min_matches > 0 {
+                findings.retain(|finding| finding.matches.len() >= min_matches);
+            }
 
             let output = if json {
                 if envelope {
@@ -671,6 +678,7 @@ fn main() -> Result<()> {
                         module: module.display().to_string(),
                         section: section.clone(),
                         hide_empty,
+                        min_matches,
                         signature_groups: findings.len(),
                         signature_matches: signature_finding_match_count(&findings),
                         findings: findings.clone(),
@@ -683,6 +691,7 @@ fn main() -> Result<()> {
                     &module,
                     section.as_deref(),
                     hide_empty,
+                    min_matches,
                     limit,
                     &findings,
                 )
@@ -1240,6 +1249,7 @@ struct SignatureReportEnvelope {
     module: String,
     section: Option<String>,
     hide_empty: bool,
+    min_matches: usize,
     signature_groups: usize,
     signature_matches: usize,
     findings: Vec<engine::SignatureFinding>,
@@ -1249,6 +1259,7 @@ fn format_signature_findings_text(
     module: &PathBuf,
     section: Option<&str>,
     hide_empty: bool,
+    min_matches: usize,
     limit: usize,
     findings: &[engine::SignatureFinding],
 ) -> String {
@@ -1257,6 +1268,7 @@ fn format_signature_findings_text(
     lines.push(format!("module: {}", module.display()));
     lines.push(format!("section filter: {}", section.unwrap_or("<none>")));
     lines.push(format!("hide empty groups: {hide_empty}"));
+    lines.push(format!("minimum matches: {min_matches}"));
     lines.push(format!("signature groups: {}", findings.len()));
     lines.push(format!("signature matches: {total_matches}"));
 
@@ -1923,6 +1935,48 @@ mod tests {
     }
 
     #[test]
+    fn signature_findings_can_be_filtered_by_minimum_matches() {
+        let mut findings = vec![
+            engine::SignatureFinding {
+                signature: "small".to_string(),
+                module_hint: "any".to_string(),
+                pattern: "90".to_string(),
+                description: "test preset".to_string(),
+                matches: vec![engine::PatternMatch {
+                    rva: 0x1000,
+                    virtual_address: 0x1800_1000,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                }],
+            },
+            engine::SignatureFinding {
+                signature: "large".to_string(),
+                module_hint: "any".to_string(),
+                pattern: "90 90".to_string(),
+                description: "test preset".to_string(),
+                matches: vec![
+                    engine::PatternMatch {
+                        rva: 0x1010,
+                        virtual_address: 0x1800_1010,
+                        section: ".text".to_string(),
+                        nearby_string: None,
+                    },
+                    engine::PatternMatch {
+                        rva: 0x1020,
+                        virtual_address: 0x1800_1020,
+                        section: ".text".to_string(),
+                        nearby_string: None,
+                    },
+                ],
+            },
+        ];
+        findings.retain(|finding| finding.matches.len() >= 2);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].signature, "large");
+    }
+
+    #[test]
     fn signature_text_reports_filters_and_truncation() {
         let findings = vec![engine::SignatureFinding {
             signature: "rip_relative_lea".to_string(),
@@ -1949,6 +2003,7 @@ mod tests {
             &PathBuf::from("client.dll"),
             Some(".text"),
             true,
+            2,
             1,
             &findings,
         );
@@ -1956,6 +2011,7 @@ mod tests {
         assert!(text.contains("module: client.dll"));
         assert!(text.contains("section filter: .text"));
         assert!(text.contains("hide empty groups: true"));
+        assert!(text.contains("minimum matches: 2"));
         assert!(text.contains("signature matches: 2"));
         assert!(text.contains("rip_relative_lea [client.dll] 2 matches"));
         assert!(text.contains("... 1 more matches"));
@@ -1989,6 +2045,7 @@ mod tests {
             module: "client.dll".to_string(),
             section: Some(".text".to_string()),
             hide_empty: true,
+            min_matches: 1,
             signature_groups: findings.len(),
             signature_matches: signature_finding_match_count(&findings),
             findings,
@@ -1998,6 +2055,7 @@ mod tests {
         assert!(json.contains("\"module\":\"client.dll\""));
         assert!(json.contains("\"section\":\".text\""));
         assert!(json.contains("\"hide_empty\":true"));
+        assert!(json.contains("\"min_matches\":1"));
         assert!(json.contains("\"signature_groups\":1"));
         assert!(json.contains("\"signature_matches\":1"));
         assert!(json.contains("\"findings\""));
