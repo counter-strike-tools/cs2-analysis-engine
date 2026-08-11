@@ -100,7 +100,7 @@ cs2-analysis-engine runtime-symbols --csv --out reports/runtime-symbols.csv
 cs2-analysis-engine runtime-symbols --csv --csv-metadata --out reports/runtime-symbols-with-metadata.csv
 ```
 
-The runtime symbol dump auto-selects a detected CS2 module, can list module sections before scanning, and prints a source/kind breakdown plus module-base/RVA context so filtered output can be compared with the full generated workspace. Text and CSV rows label the containing module section for each symbol. JSON envelope output includes the generated section map, so downstream tooling can consume the runtime dump without a separate `offsets.json`.
+The runtime symbol dump auto-selects a detected CS2 module, can list module sections before scanning, and prints a source/kind breakdown plus module-base/RVA context so filtered output can be compared with the full generated workspace. Text, CSV, and JSON rows label the containing module section for each symbol and include normalized RVAs. JSON envelope output includes the generated section map, so downstream tooling can consume the runtime dump without a separate `offsets.json`.
 
 Save a workspace report:
 

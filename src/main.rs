@@ -588,10 +588,12 @@ fn main() -> Result<()> {
                         sections: runtime_section_dumps(image.base, &sections),
                         note: runtime_symbol_filter_note(&symbols, total_symbols)
                             .map(str::to_string),
-                        symbols: symbols.clone(),
+                        symbols: runtime_symbol_dumps(image.base, &sections, &symbols),
                     })?
                 } else {
-                    serde_json::to_string_pretty(&symbols)?
+                    serde_json::to_string_pretty(&runtime_symbol_dumps(
+                        image.base, &sections, &symbols,
+                    ))?
                 }
             } else {
                 format_runtime_symbols_text(RuntimeSymbolsText {
@@ -859,6 +861,36 @@ fn runtime_symbol_section<'a>(sections: &'a [engine::SectionInfo], value: u64) -
         .map(|section| section.name.as_str())
 }
 
+#[derive(Serialize)]
+struct RuntimeSymbolDump {
+    module: String,
+    section: String,
+    va: u64,
+    rva: u64,
+    kind: String,
+    name: String,
+}
+
+fn runtime_symbol_dumps(
+    module_base: u64,
+    sections: &[engine::SectionInfo],
+    symbols: &[engine::LoadedSymbol],
+) -> Vec<RuntimeSymbolDump> {
+    symbols
+        .iter()
+        .map(|symbol| RuntimeSymbolDump {
+            module: symbol.module.clone(),
+            section: runtime_symbol_section(sections, symbol.value)
+                .unwrap_or("<unknown>")
+                .to_string(),
+            va: symbol.value,
+            rva: symbol_rva(module_base, symbol.value),
+            kind: runtime_symbol_kind_key(&symbol.name).to_string(),
+            name: symbol.name.clone(),
+        })
+        .collect()
+}
+
 fn format_runtime_sections_text(
     module: &PathBuf,
     module_base: u64,
@@ -918,7 +950,7 @@ struct RuntimeSymbolDumpEnvelope {
     sections: Vec<RuntimeSectionDump>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
-    symbols: Vec<engine::LoadedSymbol>,
+    symbols: Vec<RuntimeSymbolDump>,
 }
 
 struct RuntimeSymbolsText<'a> {
@@ -1662,6 +1694,41 @@ mod tests {
             Some(".rdata")
         );
         assert_eq!(runtime_symbol_section(&sections, 0x1800_3100), None);
+    }
+
+    #[test]
+    fn runtime_symbol_dumps_include_section_rva_and_kind() {
+        let symbols = vec![engine::LoadedSymbol {
+            module: "client.dll".to_string(),
+            name: "runtime-signature:rip_relative_lea:0000".to_string(),
+            value: 0x1800_1010,
+        }];
+
+        let dumps = runtime_symbol_dumps(0x1800_0000, &test_sections(), &symbols);
+
+        assert_eq!(dumps.len(), 1);
+        assert_eq!(dumps[0].module, "client.dll");
+        assert_eq!(dumps[0].section, ".text");
+        assert_eq!(dumps[0].va, 0x1800_1010);
+        assert_eq!(dumps[0].rva, 0x1010);
+        assert_eq!(dumps[0].kind, "rip_relative_lea");
+        assert_eq!(dumps[0].name, "runtime-signature:rip_relative_lea:0000");
+    }
+
+    #[test]
+    fn runtime_symbol_dump_json_uses_enriched_fields() {
+        let symbols = vec![engine::LoadedSymbol {
+            module: "client.dll".to_string(),
+            name: "runtime-string:interface:Source2Client002".to_string(),
+            value: 0x1800_3010,
+        }];
+        let dumps = runtime_symbol_dumps(0x1800_0000, &test_sections(), &symbols);
+        let json = serde_json::to_string(&dumps).unwrap();
+
+        assert!(json.contains("\"section\":\".rdata\""));
+        assert!(json.contains("\"va\":402665488"));
+        assert!(json.contains("\"rva\":12304"));
+        assert!(json.contains("\"kind\":\"interface\""));
     }
 
     #[test]
