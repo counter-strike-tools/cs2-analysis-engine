@@ -665,17 +665,13 @@ fn main() -> Result<()> {
                 .or_else(auto_selected_module)
                 .context("no module provided and no CS2 module candidate was auto-detected")?;
             let image = ModuleImage::load(&module)?;
-            let mut findings = filter_signature_findings_by_section(
-                run_signature_presets(&image)?,
-                section.as_deref(),
-            );
-            findings = filter_signature_findings_by_name(findings, signature.as_deref());
-            if hide_empty {
-                findings.retain(|finding| !finding.matches.is_empty());
-            }
-            if min_matches > 0 {
-                findings.retain(|finding| finding.matches.len() >= min_matches);
-            }
+            let findings = filter_signature_findings(SignatureFindingFilters {
+                findings: run_signature_presets(&image)?,
+                section: section.as_deref(),
+                signature: signature.as_deref(),
+                hide_empty,
+                min_matches,
+            });
 
             let output = if json {
                 if envelope {
@@ -1264,6 +1260,26 @@ fn filter_signature_findings_by_name(
         .into_iter()
         .filter(|finding| finding.signature.to_ascii_lowercase().contains(&signature))
         .collect()
+}
+
+struct SignatureFindingFilters<'a> {
+    findings: Vec<engine::SignatureFinding>,
+    section: Option<&'a str>,
+    signature: Option<&'a str>,
+    hide_empty: bool,
+    min_matches: usize,
+}
+
+fn filter_signature_findings(input: SignatureFindingFilters<'_>) -> Vec<engine::SignatureFinding> {
+    let mut findings = filter_signature_findings_by_section(input.findings, input.section);
+    findings = filter_signature_findings_by_name(findings, input.signature);
+    if input.hide_empty {
+        findings.retain(|finding| !finding.matches.is_empty());
+    }
+    if input.min_matches > 0 {
+        findings.retain(|finding| finding.matches.len() >= input.min_matches);
+    }
+    findings
 }
 
 #[derive(Serialize)]
@@ -2027,6 +2043,80 @@ mod tests {
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].signature, "large");
+    }
+
+    #[test]
+    fn signature_finding_filters_apply_section_name_empty_and_minimum_match_rules() {
+        let findings = vec![
+            engine::SignatureFinding {
+                signature: "rip relative small".to_string(),
+                module_hint: "client.dll".to_string(),
+                pattern: "48 8D ??".to_string(),
+                description: "test preset".to_string(),
+                matches: vec![engine::PatternMatch {
+                    rva: 0x1000,
+                    virtual_address: 0x1800_1000,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                }],
+            },
+            engine::SignatureFinding {
+                signature: "rip relative large".to_string(),
+                module_hint: "client.dll".to_string(),
+                pattern: "48 8D ??".to_string(),
+                description: "test preset".to_string(),
+                matches: vec![
+                    engine::PatternMatch {
+                        rva: 0x1010,
+                        virtual_address: 0x1800_1010,
+                        section: ".text".to_string(),
+                        nearby_string: None,
+                    },
+                    engine::PatternMatch {
+                        rva: 0x3020,
+                        virtual_address: 0x1800_3020,
+                        section: ".rdata".to_string(),
+                        nearby_string: None,
+                    },
+                    engine::PatternMatch {
+                        rva: 0x1020,
+                        virtual_address: 0x1800_1020,
+                        section: ".text".to_string(),
+                        nearby_string: None,
+                    },
+                ],
+            },
+            engine::SignatureFinding {
+                signature: "virtual call site".to_string(),
+                module_hint: "any".to_string(),
+                pattern: "48 8B ??".to_string(),
+                description: "test preset".to_string(),
+                matches: vec![engine::PatternMatch {
+                    rva: 0x1030,
+                    virtual_address: 0x1800_1030,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                }],
+            },
+        ];
+
+        let filtered = filter_signature_findings(SignatureFindingFilters {
+            findings,
+            section: Some(".text"),
+            signature: Some("rip"),
+            hide_empty: true,
+            min_matches: 2,
+        });
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].signature, "rip relative large");
+        assert_eq!(filtered[0].matches.len(), 2);
+        assert!(
+            filtered[0]
+                .matches
+                .iter()
+                .all(|item| item.section == ".text")
+        );
     }
 
     #[test]
