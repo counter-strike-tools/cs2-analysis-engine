@@ -162,6 +162,12 @@ enum Command {
         /// Keep only symbols at or below this RVA. Accepts decimal or 0x-prefixed hex.
         #[arg(long)]
         rva_max: Option<String>,
+        /// Keep only symbols near this RVA. Accepts decimal or 0x-prefixed hex.
+        #[arg(long)]
+        rva_near: Option<String>,
+        /// Radius for --rva-near. Accepts decimal or 0x-prefixed hex.
+        #[arg(long, default_value = "0x100")]
+        rva_radius: String,
         /// Sort generated symbols by address, name, or kind.
         #[arg(long, value_enum, default_value_t = RuntimeSymbolSort::Address)]
         sort: RuntimeSymbolSort,
@@ -475,6 +481,8 @@ fn main() -> Result<()> {
             kind,
             rva_min,
             rva_max,
+            rva_near,
+            rva_radius,
             sort,
             json,
             envelope,
@@ -492,16 +500,12 @@ fn main() -> Result<()> {
             let symbols = derive_runtime_symbols(&image, &strings, &findings);
             let total_symbols = symbols.len();
             let total_summary = summarize_runtime_symbols(&symbols);
-            let rva_min = rva_min
-                .as_deref()
-                .map(parse_u64)
-                .transpose()
-                .context("invalid --rva-min")?;
-            let rva_max = rva_max
-                .as_deref()
-                .map(parse_u64)
-                .transpose()
-                .context("invalid --rva-max")?;
+            let (rva_min, rva_max) = resolve_runtime_symbol_rva_window(
+                rva_min.as_deref(),
+                rva_max.as_deref(),
+                rva_near.as_deref(),
+                &rva_radius,
+            )?;
             validate_runtime_symbol_rva_range(rva_min, rva_max)?;
             let mut symbols = filter_loaded_symbols(symbols, contains.as_deref(), kind.as_deref());
             symbols = filter_runtime_symbols_by_rva(symbols, image.base, rva_min, rva_max);
@@ -668,6 +672,37 @@ fn validate_runtime_symbol_rva_range(rva_min: Option<u64>, rva_max: Option<u64>)
     }
 
     Ok(())
+}
+
+fn resolve_runtime_symbol_rva_window(
+    rva_min: Option<&str>,
+    rva_max: Option<&str>,
+    rva_near: Option<&str>,
+    rva_radius: &str,
+) -> Result<(Option<u64>, Option<u64>)> {
+    if rva_near.is_some() && (rva_min.is_some() || rva_max.is_some()) {
+        anyhow::bail!("--rva-near cannot be combined with --rva-min or --rva-max");
+    }
+
+    if let Some(center) = rva_near {
+        let center = parse_u64(center).context("invalid --rva-near")?;
+        let radius = parse_u64(rva_radius).context("invalid --rva-radius")?;
+        return Ok((
+            Some(center.saturating_sub(radius)),
+            Some(center.saturating_add(radius)),
+        ));
+    }
+
+    Ok((
+        rva_min
+            .map(parse_u64)
+            .transpose()
+            .context("invalid --rva-min")?,
+        rva_max
+            .map(parse_u64)
+            .transpose()
+            .context("invalid --rva-max")?,
+    ))
 }
 
 fn filter_runtime_symbols_by_rva(
@@ -1342,6 +1377,25 @@ mod tests {
         validate_runtime_symbol_rva_range(Some(0x1000), Some(0x2000)).unwrap();
         validate_runtime_symbol_rva_range(None, Some(0x2000)).unwrap();
         validate_runtime_symbol_rva_range(Some(0x1000), None).unwrap();
+    }
+
+    #[test]
+    fn runtime_symbol_rva_near_resolves_to_window() {
+        assert_eq!(
+            resolve_runtime_symbol_rva_window(None, None, Some("0x2000"), "0x100").unwrap(),
+            (Some(0x1f00), Some(0x2100))
+        );
+        assert_eq!(
+            resolve_runtime_symbol_rva_window(None, None, Some("0x20"), "0x100").unwrap(),
+            (Some(0), Some(0x120))
+        );
+    }
+
+    #[test]
+    fn runtime_symbol_rva_near_rejects_explicit_bounds() {
+        let err = resolve_runtime_symbol_rva_window(Some("0x1000"), None, Some("0x2000"), "0x100")
+            .unwrap_err();
+        assert!(err.to_string().contains("--rva-near cannot be combined"));
     }
 
     #[test]
