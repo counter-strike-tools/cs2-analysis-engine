@@ -89,6 +89,7 @@ Print the runtime-derived symbol dump without selecting `offsets.json`:
 cs2-analysis-engine runtime-symbols --min-len 8 --limit 100
 cs2-analysis-engine runtime-symbols --kind interface --contains Source2
 cs2-analysis-engine runtime-symbols --kind signature --contains rip
+cs2-analysis-engine runtime-symbols --section .text --kind signature
 cs2-analysis-engine runtime-symbols --sort name --contains Source2
 cs2-analysis-engine runtime-symbols --rva-min 0x1800 --rva-max 0x2800
 cs2-analysis-engine runtime-symbols --rva-near 0x3000 --rva-radius 0x100

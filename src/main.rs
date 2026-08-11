@@ -156,6 +156,9 @@ enum Command {
         /// Keep only a symbol kind: string, signature, interface, schema, class, convar, source-path, format, or decorated.
         #[arg(long)]
         kind: Option<String>,
+        /// Keep only symbols whose address falls in this module section, for example .text or .rdata.
+        #[arg(long)]
+        section: Option<String>,
         /// Keep only symbols at or above this RVA. Accepts decimal or 0x-prefixed hex.
         #[arg(long)]
         rva_min: Option<String>,
@@ -479,6 +482,7 @@ fn main() -> Result<()> {
             limit,
             contains,
             kind,
+            section,
             rva_min,
             rva_max,
             rva_near,
@@ -495,6 +499,7 @@ fn main() -> Result<()> {
                 .or_else(auto_selected_module)
                 .context("no module provided and no CS2 module candidate was auto-detected")?;
             let image = ModuleImage::load(&module)?;
+            let sections = image.sections()?;
             let strings = extract_ascii_strings(&image, min_len);
             let findings = run_signature_presets(&image)?;
             let symbols = derive_runtime_symbols(&image, &strings, &findings);
@@ -509,6 +514,7 @@ fn main() -> Result<()> {
             validate_runtime_symbol_rva_range(rva_min, rva_max)?;
             let mut symbols = filter_loaded_symbols(symbols, contains.as_deref(), kind.as_deref());
             symbols = filter_runtime_symbols_by_rva(symbols, image.base, rva_min, rva_max);
+            symbols = filter_runtime_symbols_by_section(symbols, section.as_deref(), &sections)?;
             sort_runtime_symbols(&mut symbols, sort);
             let filtered_summary = summarize_runtime_symbols(&symbols);
 
@@ -523,6 +529,7 @@ fn main() -> Result<()> {
                     sort,
                     contains: contains.as_deref(),
                     kind: kind.as_deref(),
+                    section: section.as_deref(),
                     rva_min,
                     rva_max,
                     strings_scanned: strings.len(),
@@ -540,6 +547,7 @@ fn main() -> Result<()> {
                         min_len,
                         contains: contains.clone(),
                         kind: kind.clone(),
+                        section: section.clone(),
                         rva_min,
                         rva_max,
                         sort,
@@ -570,6 +578,7 @@ fn main() -> Result<()> {
                     sort,
                     contains: contains.as_deref(),
                     kind: kind.as_deref(),
+                    section: section.as_deref(),
                     rva_min,
                     rva_max,
                     strings_scanned: strings.len(),
@@ -722,6 +731,29 @@ fn filter_runtime_symbols_by_rva(
         .collect()
 }
 
+fn filter_runtime_symbols_by_section(
+    symbols: Vec<engine::LoadedSymbol>,
+    section: Option<&str>,
+    sections: &[engine::SectionInfo],
+) -> Result<Vec<engine::LoadedSymbol>> {
+    let Some(section_name) = section else {
+        return Ok(symbols);
+    };
+    let Some(section) = sections
+        .iter()
+        .find(|item| item.name.eq_ignore_ascii_case(section_name))
+    else {
+        anyhow::bail!("section '{section_name}' was not found in the selected module");
+    };
+    let start = section.address;
+    let end = start.saturating_add(section.size);
+
+    Ok(symbols
+        .into_iter()
+        .filter(|symbol| symbol.value >= start && symbol.value < end)
+        .collect())
+}
+
 fn sort_runtime_symbols(symbols: &mut [engine::LoadedSymbol], sort: RuntimeSymbolSort) {
     match sort {
         RuntimeSymbolSort::Address => symbols.sort_by(|a, b| {
@@ -760,6 +792,7 @@ struct RuntimeSymbolDumpEnvelope {
     min_len: usize,
     contains: Option<String>,
     kind: Option<String>,
+    section: Option<String>,
     rva_min: Option<u64>,
     rva_max: Option<u64>,
     sort: RuntimeSymbolSort,
@@ -784,6 +817,7 @@ struct RuntimeSymbolsText<'a> {
     sort: RuntimeSymbolSort,
     contains: Option<&'a str>,
     kind: Option<&'a str>,
+    section: Option<&'a str>,
     rva_min: Option<u64>,
     rva_max: Option<u64>,
     strings_scanned: usize,
@@ -802,9 +836,10 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
     ));
     lines.push(format!("sort: {:?}", input.sort));
     lines.push(format!(
-        "filters: contains={} kind={} rva-min={} rva-max={}",
+        "filters: contains={} kind={} section={} rva-min={} rva-max={}",
         input.contains.unwrap_or("<none>"),
         input.kind.unwrap_or("<none>"),
+        input.section.unwrap_or("<none>"),
         input
             .rva_min
             .map(|value| format!("{value:#x}"))
@@ -877,6 +912,7 @@ struct RuntimeSymbolsCsv<'a> {
     sort: RuntimeSymbolSort,
     contains: Option<&'a str>,
     kind: Option<&'a str>,
+    section: Option<&'a str>,
     rva_min: Option<u64>,
     rva_max: Option<u64>,
     strings_scanned: usize,
@@ -891,9 +927,10 @@ fn format_runtime_symbols_csv(input: RuntimeSymbolsCsv<'_>) -> String {
         lines.push(format!("# module_base={:#x}", input.module_base));
         lines.push(format!("# sort={:?}", input.sort));
         lines.push(format!(
-            "# filters contains={} kind={} rva_min={} rva_max={}",
+            "# filters contains={} kind={} section={} rva_min={} rva_max={}",
             input.contains.unwrap_or("<none>"),
             input.kind.unwrap_or("<none>"),
+            input.section.unwrap_or("<none>"),
             input
                 .rva_min
                 .map(|value| format!("{value:#x}"))
@@ -1286,6 +1323,25 @@ fn format_string_kind(kind: StringKind) -> &'static str {
 mod tests {
     use super::*;
 
+    fn test_sections() -> Vec<engine::SectionInfo> {
+        vec![
+            engine::SectionInfo {
+                name: ".text".to_string(),
+                address: 0x1800_1000,
+                size: 0x100,
+                file_range: None,
+                executable: true,
+            },
+            engine::SectionInfo {
+                name: ".rdata".to_string(),
+                address: 0x1800_3000,
+                size: 0x100,
+                file_range: None,
+                executable: false,
+            },
+        ]
+    }
+
     #[test]
     fn runtime_symbol_csv_includes_va_rva_kind_and_escaped_name() {
         let symbols = vec![engine::LoadedSymbol {
@@ -1305,6 +1361,7 @@ mod tests {
             sort: RuntimeSymbolSort::Address,
             contains: None,
             kind: None,
+            section: None,
             rva_min: None,
             rva_max: None,
             strings_scanned: 0,
@@ -1343,6 +1400,7 @@ mod tests {
             sort: RuntimeSymbolSort::Kind,
             contains: Some("rip"),
             kind: Some("signature"),
+            section: Some(".text"),
             rva_min: Some(0x1000),
             rva_max: Some(0x2000),
             strings_scanned: 12,
@@ -1356,7 +1414,7 @@ mod tests {
         assert_eq!(rows[2], "# sort=Kind");
         assert_eq!(
             rows[3],
-            "# filters contains=rip kind=signature rva_min=0x1000 rva_max=0x2000"
+            "# filters contains=rip kind=signature section=.text rva_min=0x1000 rva_max=0x2000"
         );
         assert_eq!(rows[4], "# symbols filtered=1 total=3");
         assert_eq!(rows[8], "# signature_hits=99");
@@ -1376,6 +1434,7 @@ mod tests {
             sort: RuntimeSymbolSort::Address,
             contains: Some("missing"),
             kind: None,
+            section: None,
             rva_min: None,
             rva_max: None,
             strings_scanned: 12,
@@ -1399,6 +1458,7 @@ mod tests {
             sort: RuntimeSymbolSort::Address,
             contains: Some("missing"),
             kind: None,
+            section: None,
             rva_min: None,
             rva_max: None,
             strings_scanned: 12,
@@ -1447,6 +1507,36 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "runtime-signature:inside:0000");
+    }
+
+    #[test]
+    fn runtime_symbols_can_be_filtered_by_section() {
+        let symbols = vec![
+            engine::LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-signature:text:0000".to_string(),
+                value: 0x1800_1010,
+            },
+            engine::LoadedSymbol {
+                module: "client.dll".to_string(),
+                name: "runtime-string:rdata:0000".to_string(),
+                value: 0x1800_3010,
+            },
+        ];
+
+        let filtered =
+            filter_runtime_symbols_by_section(symbols, Some(".TEXT"), &test_sections()).unwrap();
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "runtime-signature:text:0000");
+    }
+
+    #[test]
+    fn runtime_symbol_section_filter_reports_unknown_section() {
+        let err = filter_runtime_symbols_by_section(Vec::new(), Some(".missing"), &test_sections())
+            .unwrap_err();
+
+        assert!(err.to_string().contains("section '.missing' was not found"));
     }
 
     #[test]
