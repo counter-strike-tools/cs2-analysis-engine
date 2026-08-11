@@ -212,6 +212,9 @@ enum Command {
         /// Omit signature groups with fewer than this many matches after filtering.
         #[arg(long, default_value_t = 0)]
         min_matches: usize,
+        /// Sort signature groups by preset order, name, or match count.
+        #[arg(long, value_enum, default_value_t = SignatureSort::Preset)]
+        sort: SignatureSort,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -247,6 +250,14 @@ enum RuntimeSymbolSort {
     Address,
     Name,
     Kind,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum SignatureSort {
+    Preset,
+    Name,
+    Matches,
 }
 
 fn main() -> Result<()> {
@@ -656,6 +667,7 @@ fn main() -> Result<()> {
             limit,
             hide_empty,
             min_matches,
+            sort,
             json,
             envelope,
             out,
@@ -671,6 +683,7 @@ fn main() -> Result<()> {
                 signature: signature.as_deref(),
                 hide_empty,
                 min_matches,
+                sort,
             });
 
             let output = if json {
@@ -681,6 +694,7 @@ fn main() -> Result<()> {
                         signature: signature.clone(),
                         hide_empty,
                         min_matches,
+                        sort,
                         signature_groups: findings.len(),
                         signature_matches: signature_finding_match_count(&findings),
                         findings: findings.clone(),
@@ -695,6 +709,7 @@ fn main() -> Result<()> {
                     signature.as_deref(),
                     hide_empty,
                     min_matches,
+                    sort,
                     limit,
                     &findings,
                 )
@@ -1268,6 +1283,7 @@ struct SignatureFindingFilters<'a> {
     signature: Option<&'a str>,
     hide_empty: bool,
     min_matches: usize,
+    sort: SignatureSort,
 }
 
 fn filter_signature_findings(input: SignatureFindingFilters<'_>) -> Vec<engine::SignatureFinding> {
@@ -1279,7 +1295,21 @@ fn filter_signature_findings(input: SignatureFindingFilters<'_>) -> Vec<engine::
     if input.min_matches > 0 {
         findings.retain(|finding| finding.matches.len() >= input.min_matches);
     }
+    sort_signature_findings(&mut findings, input.sort);
     findings
+}
+
+fn sort_signature_findings(findings: &mut [engine::SignatureFinding], sort: SignatureSort) {
+    match sort {
+        SignatureSort::Preset => {}
+        SignatureSort::Name => findings.sort_by(|a, b| a.signature.cmp(&b.signature)),
+        SignatureSort::Matches => findings.sort_by(|a, b| {
+            b.matches
+                .len()
+                .cmp(&a.matches.len())
+                .then(a.signature.cmp(&b.signature))
+        }),
+    }
 }
 
 #[derive(Serialize)]
@@ -1289,6 +1319,7 @@ struct SignatureReportEnvelope {
     signature: Option<String>,
     hide_empty: bool,
     min_matches: usize,
+    sort: SignatureSort,
     signature_groups: usize,
     signature_matches: usize,
     findings: Vec<engine::SignatureFinding>,
@@ -1300,6 +1331,7 @@ fn format_signature_findings_text(
     signature: Option<&str>,
     hide_empty: bool,
     min_matches: usize,
+    sort: SignatureSort,
     limit: usize,
     findings: &[engine::SignatureFinding],
 ) -> String {
@@ -1313,6 +1345,7 @@ fn format_signature_findings_text(
     ));
     lines.push(format!("hide empty groups: {hide_empty}"));
     lines.push(format!("minimum matches: {min_matches}"));
+    lines.push(format!("sort: {:?}", sort));
     lines.push(format!("signature groups: {}", findings.len()));
     lines.push(format!("signature matches: {total_matches}"));
 
@@ -2106,6 +2139,7 @@ mod tests {
             signature: Some("rip"),
             hide_empty: true,
             min_matches: 2,
+            sort: SignatureSort::Preset,
         });
 
         assert_eq!(filtered.len(), 1);
@@ -2117,6 +2151,84 @@ mod tests {
                 .iter()
                 .all(|item| item.section == ".text")
         );
+    }
+
+    #[test]
+    fn signature_findings_can_be_sorted_by_match_count_descending() {
+        let filtered = filter_signature_findings(SignatureFindingFilters {
+            findings: vec![
+                engine::SignatureFinding {
+                    signature: "small".to_string(),
+                    module_hint: "any".to_string(),
+                    pattern: "90".to_string(),
+                    description: "test preset".to_string(),
+                    matches: vec![engine::PatternMatch {
+                        rva: 0x1000,
+                        virtual_address: 0x1800_1000,
+                        section: ".text".to_string(),
+                        nearby_string: None,
+                    }],
+                },
+                engine::SignatureFinding {
+                    signature: "large".to_string(),
+                    module_hint: "any".to_string(),
+                    pattern: "90 90".to_string(),
+                    description: "test preset".to_string(),
+                    matches: vec![
+                        engine::PatternMatch {
+                            rva: 0x1010,
+                            virtual_address: 0x1800_1010,
+                            section: ".text".to_string(),
+                            nearby_string: None,
+                        },
+                        engine::PatternMatch {
+                            rva: 0x1020,
+                            virtual_address: 0x1800_1020,
+                            section: ".text".to_string(),
+                            nearby_string: None,
+                        },
+                    ],
+                },
+            ],
+            section: None,
+            signature: None,
+            hide_empty: false,
+            min_matches: 0,
+            sort: SignatureSort::Matches,
+        });
+
+        assert_eq!(filtered[0].signature, "large");
+        assert_eq!(filtered[1].signature, "small");
+    }
+
+    #[test]
+    fn signature_findings_can_be_sorted_by_name() {
+        let filtered = filter_signature_findings(SignatureFindingFilters {
+            findings: vec![
+                engine::SignatureFinding {
+                    signature: "virtual call site".to_string(),
+                    module_hint: "any".to_string(),
+                    pattern: "90".to_string(),
+                    description: "test preset".to_string(),
+                    matches: Vec::new(),
+                },
+                engine::SignatureFinding {
+                    signature: "rip relative lea".to_string(),
+                    module_hint: "client.dll".to_string(),
+                    pattern: "48 8D ??".to_string(),
+                    description: "test preset".to_string(),
+                    matches: Vec::new(),
+                },
+            ],
+            section: None,
+            signature: None,
+            hide_empty: false,
+            min_matches: 0,
+            sort: SignatureSort::Name,
+        });
+
+        assert_eq!(filtered[0].signature, "rip relative lea");
+        assert_eq!(filtered[1].signature, "virtual call site");
     }
 
     #[test]
@@ -2148,6 +2260,7 @@ mod tests {
             Some("rip"),
             true,
             2,
+            SignatureSort::Matches,
             1,
             &findings,
         );
@@ -2157,6 +2270,7 @@ mod tests {
         assert!(text.contains("signature filter: rip"));
         assert!(text.contains("hide empty groups: true"));
         assert!(text.contains("minimum matches: 2"));
+        assert!(text.contains("sort: Matches"));
         assert!(text.contains("signature matches: 2"));
         assert!(text.contains("rip_relative_lea [client.dll] 2 matches"));
         assert!(text.contains("... 1 more matches"));
@@ -2192,6 +2306,7 @@ mod tests {
             signature: Some("rip".to_string()),
             hide_empty: true,
             min_matches: 1,
+            sort: SignatureSort::Matches,
             signature_groups: findings.len(),
             signature_matches: signature_finding_match_count(&findings),
             findings,
@@ -2203,6 +2318,7 @@ mod tests {
         assert!(json.contains("\"signature\":\"rip\""));
         assert!(json.contains("\"hide_empty\":true"));
         assert!(json.contains("\"min_matches\":1"));
+        assert!(json.contains("\"sort\":\"matches\""));
         assert!(json.contains("\"signature_groups\":1"));
         assert!(json.contains("\"signature_matches\":1"));
         assert!(json.contains("\"findings\""));
