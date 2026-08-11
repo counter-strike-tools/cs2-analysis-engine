@@ -159,6 +159,9 @@ enum Command {
         /// Keep only symbols whose address falls in this module section, for example .text or .rdata.
         #[arg(long)]
         section: Option<String>,
+        /// List detected module sections and address ranges, then exit.
+        #[arg(long)]
+        list_sections: bool,
         /// Keep only symbols at or above this RVA. Accepts decimal or 0x-prefixed hex.
         #[arg(long)]
         rva_min: Option<String>,
@@ -483,6 +486,7 @@ fn main() -> Result<()> {
             contains,
             kind,
             section,
+            list_sections,
             rva_min,
             rva_max,
             rva_near,
@@ -500,6 +504,26 @@ fn main() -> Result<()> {
                 .context("no module provided and no CS2 module candidate was auto-detected")?;
             let image = ModuleImage::load(&module)?;
             let sections = image.sections()?;
+
+            if list_sections {
+                let output = if csv {
+                    format_runtime_sections_csv(image.base, &sections)
+                } else if json {
+                    serde_json::to_string_pretty(&sections)?
+                } else {
+                    format_runtime_sections_text(&module, image.base, &sections)
+                };
+
+                if let Some(path) = out {
+                    write_report_file(&path, &output)?;
+                    println!("wrote runtime section list: {}", path.display());
+                } else {
+                    println!("{output}");
+                }
+
+                return Ok(());
+            }
+
             let strings = extract_ascii_strings(&image, min_len);
             let findings = run_signature_presets(&image)?;
             let symbols = derive_runtime_symbols(&image, &strings, &findings);
@@ -783,6 +807,49 @@ fn runtime_symbol_kind_key(name: &str) -> &str {
 
 fn symbol_rva(module_base: u64, value: u64) -> u64 {
     value.saturating_sub(module_base)
+}
+
+fn runtime_section_kind(section: &engine::SectionInfo) -> &'static str {
+    if section.executable { "code" } else { "data" }
+}
+
+fn format_runtime_sections_text(
+    module: &PathBuf,
+    module_base: u64,
+    sections: &[engine::SectionInfo],
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("module: {}", module.display()));
+    lines.push(format!("module base: {module_base:#x}"));
+    lines.push(format!("sections: {}", sections.len()));
+
+    for section in sections {
+        lines.push(format!(
+            "{:<12} va={:#014x} rva={:#010x} size={:#x} kind={}",
+            section.name,
+            section.address,
+            symbol_rva(module_base, section.address),
+            section.size,
+            runtime_section_kind(section)
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn format_runtime_sections_csv(module_base: u64, sections: &[engine::SectionInfo]) -> String {
+    let mut lines = vec!["name,va,rva,size,kind".to_string()];
+    for section in sections {
+        lines.push(format!(
+            "{},{:#x},{:#x},{:#x},{}",
+            csv_escape(&section.name),
+            section.address,
+            symbol_rva(module_base, section.address),
+            section.size,
+            runtime_section_kind(section)
+        ));
+    }
+    lines.join("\n")
 }
 
 #[derive(Serialize)]
@@ -1467,6 +1534,34 @@ mod tests {
         });
 
         assert!(text.contains("no runtime symbols matched the active filters"));
+    }
+
+    #[test]
+    fn runtime_sections_text_includes_va_rva_size_and_kind() {
+        let text = format_runtime_sections_text(
+            &PathBuf::from("client.dll"),
+            0x1800_0000,
+            &test_sections(),
+        );
+
+        assert!(text.contains("module: client.dll"));
+        assert!(text.contains("sections: 2"));
+        assert!(text.contains(".text"));
+        assert!(text.contains("va=0x000018001000"));
+        assert!(text.contains("rva=0x00001000"));
+        assert!(text.contains("size=0x100"));
+        assert!(text.contains("kind=code"));
+        assert!(text.contains("kind=data"));
+    }
+
+    #[test]
+    fn runtime_sections_csv_includes_header_and_rows() {
+        let csv = format_runtime_sections_csv(0x1800_0000, &test_sections());
+        let rows = csv.lines().collect::<Vec<_>>();
+
+        assert_eq!(rows[0], "name,va,rva,size,kind");
+        assert_eq!(rows[1], ".text,0x18001000,0x1000,0x100,code");
+        assert_eq!(rows[2], ".rdata,0x18003000,0x3000,0x100,data");
     }
 
     #[test]

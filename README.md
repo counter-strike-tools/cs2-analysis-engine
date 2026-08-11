@@ -86,6 +86,7 @@ cs2-analysis-engine summary --json --out reports/summary.json
 Print the runtime-derived symbol dump without selecting `offsets.json`:
 
 ```text
+cs2-analysis-engine runtime-symbols --list-sections
 cs2-analysis-engine runtime-symbols --min-len 8 --limit 100
 cs2-analysis-engine runtime-symbols --kind interface --contains Source2
 cs2-analysis-engine runtime-symbols --kind signature --contains rip
@@ -99,7 +100,7 @@ cs2-analysis-engine runtime-symbols --csv --out reports/runtime-symbols.csv
 cs2-analysis-engine runtime-symbols --csv --csv-metadata --out reports/runtime-symbols-with-metadata.csv
 ```
 
-The runtime symbol dump prints a source/kind breakdown and module-base/RVA context so filtered output can be compared with the full generated workspace.
+The runtime symbol dump auto-selects a detected CS2 module, can list module sections before scanning, and prints a source/kind breakdown plus module-base/RVA context so filtered output can be compared with the full generated workspace.
 
 Save a workspace report:
 
