@@ -552,6 +552,8 @@ fn main() -> Result<()> {
                             .iter()
                             .map(|finding| finding.matches.len())
                             .sum::<usize>(),
+                        note: runtime_symbol_filter_note(&symbols, total_symbols)
+                            .map(str::to_string),
                         symbols: symbols.clone(),
                     })?
                 } else {
@@ -767,6 +769,8 @@ struct RuntimeSymbolDumpEnvelope {
     filtered_summary: engine::RuntimeSymbolSummary,
     strings_scanned: usize,
     signature_hits: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
     symbols: Vec<engine::LoadedSymbol>,
 }
 
@@ -840,8 +844,8 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
     }
     lines.push(format!("strings scanned: {}", input.strings_scanned));
     lines.push(format!("signature hits: {}", input.signature_hits));
-    if input.symbols.is_empty() && input.total_symbols > 0 {
-        lines.push(empty_runtime_symbol_filter_note().to_string());
+    if let Some(note) = runtime_symbol_filter_note(input.symbols, input.total_symbols) {
+        lines.push(note.to_string());
     }
 
     for symbol in input.symbols.iter().take(input.limit) {
@@ -932,8 +936,8 @@ fn format_runtime_symbols_csv(input: RuntimeSymbolsCsv<'_>) -> String {
         ));
         lines.push(format!("# strings_scanned={}", input.strings_scanned));
         lines.push(format!("# signature_hits={}", input.signature_hits));
-        if input.symbols.is_empty() && input.total_symbols > 0 {
-            lines.push(format!("# note={}", empty_runtime_symbol_filter_note()));
+        if let Some(note) = runtime_symbol_filter_note(input.symbols, input.total_symbols) {
+            lines.push(format!("# note={note}"));
         }
     }
 
@@ -953,6 +957,13 @@ fn format_runtime_symbols_csv(input: RuntimeSymbolsCsv<'_>) -> String {
 
 fn empty_runtime_symbol_filter_note() -> &'static str {
     "no runtime symbols matched the active filters; relax --contains, --kind, or RVA bounds"
+}
+
+fn runtime_symbol_filter_note(
+    symbols: &[engine::LoadedSymbol],
+    total_symbols: usize,
+) -> Option<&'static str> {
+    (symbols.is_empty() && total_symbols > 0).then_some(empty_runtime_symbol_filter_note())
 }
 
 fn csv_escape(value: &str) -> String {
@@ -1396,6 +1407,19 @@ mod tests {
         });
 
         assert!(text.contains("no runtime symbols matched the active filters"));
+    }
+
+    #[test]
+    fn runtime_symbol_filter_note_only_reports_empty_filtered_sets() {
+        let symbols = vec![engine::LoadedSymbol {
+            module: "client.dll".to_string(),
+            name: "runtime-signature:rip_relative_load:0000".to_string(),
+            value: 0x1800_1000,
+        }];
+
+        assert!(runtime_symbol_filter_note(&[], 3).is_some());
+        assert!(runtime_symbol_filter_note(&[], 0).is_none());
+        assert!(runtime_symbol_filter_note(&symbols, 3).is_none());
     }
 
     #[test]
