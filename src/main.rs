@@ -546,6 +546,7 @@ fn main() -> Result<()> {
                 format_runtime_symbols_csv(RuntimeSymbolsCsv {
                     module: &module,
                     module_base: image.base,
+                    sections: &sections,
                     symbols: &symbols,
                     total_symbols,
                     filtered_summary: &filtered_summary,
@@ -596,6 +597,7 @@ fn main() -> Result<()> {
                 format_runtime_symbols_text(RuntimeSymbolsText {
                     module: &module,
                     module_base: image.base,
+                    sections: &sections,
                     symbols: &symbols,
                     total_symbols,
                     filtered_summary: &filtered_summary,
@@ -846,6 +848,17 @@ fn runtime_section_dumps(
         .collect()
 }
 
+fn runtime_symbol_section<'a>(sections: &'a [engine::SectionInfo], value: u64) -> Option<&'a str> {
+    sections
+        .iter()
+        .find(|section| {
+            let start = section.address;
+            let end = start.saturating_add(section.size);
+            value >= start && value < end
+        })
+        .map(|section| section.name.as_str())
+}
+
 fn format_runtime_sections_text(
     module: &PathBuf,
     module_base: u64,
@@ -911,6 +924,7 @@ struct RuntimeSymbolDumpEnvelope {
 struct RuntimeSymbolsText<'a> {
     module: &'a PathBuf,
     module_base: u64,
+    sections: &'a [engine::SectionInfo],
     symbols: &'a [engine::LoadedSymbol],
     total_symbols: usize,
     filtered_summary: &'a engine::RuntimeSymbolSummary,
@@ -985,9 +999,11 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
     }
 
     for symbol in input.symbols.iter().take(input.limit) {
+        let section = runtime_symbol_section(input.sections, symbol.value).unwrap_or("<unknown>");
         lines.push(format!(
-            "{:<18} va={:#014x} rva={:#010x} {}",
+            "{:<18} section={:<8} va={:#014x} rva={:#010x} {}",
             symbol.module,
+            section,
             symbol.value,
             symbol_rva(input.module_base, symbol.value),
             symbol.name
@@ -1006,6 +1022,7 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
 struct RuntimeSymbolsCsv<'a> {
     module: &'a PathBuf,
     module_base: u64,
+    sections: &'a [engine::SectionInfo],
     symbols: &'a [engine::LoadedSymbol],
     total_symbols: usize,
     filtered_summary: &'a engine::RuntimeSymbolSummary,
@@ -1079,11 +1096,13 @@ fn format_runtime_symbols_csv(input: RuntimeSymbolsCsv<'_>) -> String {
         }
     }
 
-    lines.push("module,va,rva,kind,name".to_string());
+    lines.push("module,section,va,rva,kind,name".to_string());
     for symbol in input.symbols {
+        let section = runtime_symbol_section(input.sections, symbol.value).unwrap_or("<unknown>");
         lines.push(format!(
-            "{},{:#x},{:#x},{},{}",
+            "{},{},{:#x},{:#x},{},{}",
             csv_escape(&symbol.module),
+            csv_escape(section),
             symbol.value,
             symbol_rva(input.module_base, symbol.value),
             csv_escape(runtime_symbol_kind_key(&symbol.name)),
@@ -1455,6 +1474,7 @@ mod tests {
         let csv = format_runtime_symbols_csv(RuntimeSymbolsCsv {
             module: &PathBuf::from("client.dll"),
             module_base: 0x1800_0000,
+            sections: &test_sections(),
             symbols: &symbols,
             total_symbols: symbols.len(),
             filtered_summary: &empty_summary,
@@ -1471,10 +1491,10 @@ mod tests {
         });
         let rows = csv.lines().collect::<Vec<_>>();
 
-        assert_eq!(rows[0], "module,va,rva,kind,name");
+        assert_eq!(rows[0], "module,section,va,rva,kind,name");
         assert_eq!(
             rows[1],
-            "client.dll,0x18001234,0x1234,interface,\"runtime-string:interface:Source2,Client\"\"002\""
+            "client.dll,<unknown>,0x18001234,0x1234,interface,\"runtime-string:interface:Source2,Client\"\"002\""
         );
     }
 
@@ -1494,6 +1514,7 @@ mod tests {
         let csv = format_runtime_symbols_csv(RuntimeSymbolsCsv {
             module: &PathBuf::from("client.dll"),
             module_base: 0x1800_0000,
+            sections: &test_sections(),
             symbols: &symbols,
             total_symbols: 3,
             filtered_summary: &summary,
@@ -1519,7 +1540,11 @@ mod tests {
         );
         assert_eq!(rows[4], "# symbols filtered=1 total=3");
         assert_eq!(rows[8], "# signature_hits=99");
-        assert_eq!(rows[9], "module,va,rva,kind,name");
+        assert_eq!(rows[9], "module,section,va,rva,kind,name");
+        assert_eq!(
+            rows[10],
+            "client.dll,.text,0x18001000,0x1000,rip_relative_load,runtime-signature:rip_relative_load:0000"
+        );
     }
 
     #[test]
@@ -1528,6 +1553,7 @@ mod tests {
         let csv = format_runtime_symbols_csv(RuntimeSymbolsCsv {
             module: &PathBuf::from("client.dll"),
             module_base: 0x1800_0000,
+            sections: &test_sections(),
             symbols: &[],
             total_symbols: 3,
             filtered_summary: &summary,
@@ -1552,6 +1578,7 @@ mod tests {
         let text = format_runtime_symbols_text(RuntimeSymbolsText {
             module: &PathBuf::from("client.dll"),
             module_base: 0x1800_0000,
+            sections: &test_sections(),
             symbols: &[],
             total_symbols: 3,
             filtered_summary: &summary,
@@ -1620,6 +1647,21 @@ mod tests {
         assert!(json.contains("\"va\":402657280"));
         assert!(json.contains("\"rva\":4096"));
         assert!(json.contains("\"kind\":\"code\""));
+    }
+
+    #[test]
+    fn runtime_symbol_section_resolves_containing_section() {
+        let sections = test_sections();
+
+        assert_eq!(
+            runtime_symbol_section(&sections, 0x1800_1010),
+            Some(".text")
+        );
+        assert_eq!(
+            runtime_symbol_section(&sections, 0x1800_30ff),
+            Some(".rdata")
+        );
+        assert_eq!(runtime_symbol_section(&sections, 0x1800_3100), None);
     }
 
     #[test]
