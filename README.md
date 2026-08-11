@@ -157,6 +157,7 @@ Run built-in signature finders:
 cs2-analysis-engine signatures client.dll
 cs2-analysis-engine signatures --section .text --limit 10 --hide-empty
 cs2-analysis-engine signatures --section .text --hide-empty --json --out reports/signatures-text.json
+cs2-analysis-engine signatures --section .text --hide-empty --json --envelope --out reports/signature-report.json
 ```
 
 List known dumper symbols:

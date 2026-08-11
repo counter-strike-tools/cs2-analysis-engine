@@ -209,6 +209,9 @@ enum Command {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+        /// With --json, include module, filters, summaries, and findings in one object.
+        #[arg(long)]
+        envelope: bool,
         /// Write the signature report to a file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -646,8 +649,10 @@ fn main() -> Result<()> {
             limit,
             hide_empty,
             json,
+            envelope,
             out,
         } => {
+            validate_signature_output_options(json, envelope)?;
             let module = module
                 .or_else(auto_selected_module)
                 .context("no module provided and no CS2 module candidate was auto-detected")?;
@@ -661,7 +666,18 @@ fn main() -> Result<()> {
             }
 
             let output = if json {
-                serde_json::to_string_pretty(&findings)?
+                if envelope {
+                    serde_json::to_string_pretty(&SignatureReportEnvelope {
+                        module: module.display().to_string(),
+                        section: section.clone(),
+                        hide_empty,
+                        signature_groups: findings.len(),
+                        signature_matches: signature_finding_match_count(&findings),
+                        findings: findings.clone(),
+                    })?
+                } else {
+                    serde_json::to_string_pretty(&findings)?
+                }
             } else {
                 format_signature_findings_text(
                     &module,
@@ -728,6 +744,14 @@ fn validate_runtime_symbol_output_options(
     }
     if csv_metadata && !csv {
         anyhow::bail!("--csv-metadata requires --csv");
+    }
+
+    Ok(())
+}
+
+fn validate_signature_output_options(json: bool, envelope: bool) -> Result<()> {
+    if envelope && !json {
+        anyhow::bail!("--envelope requires --json");
     }
 
     Ok(())
@@ -1209,6 +1233,16 @@ fn filter_signature_findings_by_section(
             finding
         })
         .collect()
+}
+
+#[derive(Serialize)]
+struct SignatureReportEnvelope {
+    module: String,
+    section: Option<String>,
+    hide_empty: bool,
+    signature_groups: usize,
+    signature_matches: usize,
+    findings: Vec<engine::SignatureFinding>,
 }
 
 fn format_signature_findings_text(
@@ -1925,6 +1959,48 @@ mod tests {
         assert!(text.contains("signature matches: 2"));
         assert!(text.contains("rip_relative_lea [client.dll] 2 matches"));
         assert!(text.contains("... 1 more matches"));
+    }
+
+    #[test]
+    fn signature_output_options_reject_envelope_without_json() {
+        let err = validate_signature_output_options(false, true).unwrap_err();
+        assert!(err.to_string().contains("--envelope requires --json"));
+
+        validate_signature_output_options(true, true).unwrap();
+        validate_signature_output_options(true, false).unwrap();
+        validate_signature_output_options(false, false).unwrap();
+    }
+
+    #[test]
+    fn signature_envelope_json_includes_summary_fields() {
+        let findings = vec![engine::SignatureFinding {
+            signature: "rip_relative_lea".to_string(),
+            module_hint: "client.dll".to_string(),
+            pattern: "48 8D ??".to_string(),
+            description: "test preset".to_string(),
+            matches: vec![engine::PatternMatch {
+                rva: 0x1000,
+                virtual_address: 0x1800_1000,
+                section: ".text".to_string(),
+                nearby_string: None,
+            }],
+        }];
+        let envelope = SignatureReportEnvelope {
+            module: "client.dll".to_string(),
+            section: Some(".text".to_string()),
+            hide_empty: true,
+            signature_groups: findings.len(),
+            signature_matches: signature_finding_match_count(&findings),
+            findings,
+        };
+        let json = serde_json::to_string(&envelope).unwrap();
+
+        assert!(json.contains("\"module\":\"client.dll\""));
+        assert!(json.contains("\"section\":\".text\""));
+        assert!(json.contains("\"hide_empty\":true"));
+        assert!(json.contains("\"signature_groups\":1"));
+        assert!(json.contains("\"signature_matches\":1"));
+        assert!(json.contains("\"findings\""));
     }
 
     #[test]
