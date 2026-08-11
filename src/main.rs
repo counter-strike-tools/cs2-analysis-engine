@@ -509,7 +509,7 @@ fn main() -> Result<()> {
                 let output = if csv {
                     format_runtime_sections_csv(image.base, &sections)
                 } else if json {
-                    serde_json::to_string_pretty(&sections)?
+                    serde_json::to_string_pretty(&runtime_section_dumps(image.base, &sections))?
                 } else {
                     format_runtime_sections_text(&module, image.base, &sections)
                 };
@@ -584,6 +584,7 @@ fn main() -> Result<()> {
                             .iter()
                             .map(|finding| finding.matches.len())
                             .sum::<usize>(),
+                        sections: runtime_section_dumps(image.base, &sections),
                         note: runtime_symbol_filter_note(&symbols, total_symbols)
                             .map(str::to_string),
                         symbols: symbols.clone(),
@@ -767,7 +768,14 @@ fn filter_runtime_symbols_by_section(
         .iter()
         .find(|item| item.name.eq_ignore_ascii_case(section_name))
     else {
-        anyhow::bail!("section '{section_name}' was not found in the selected module");
+        let available = sections
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "section '{section_name}' was not found in the selected module; available sections: {available}"
+        );
     };
     let start = section.address;
     let end = start.saturating_add(section.size);
@@ -811,6 +819,31 @@ fn symbol_rva(module_base: u64, value: u64) -> u64 {
 
 fn runtime_section_kind(section: &engine::SectionInfo) -> &'static str {
     if section.executable { "code" } else { "data" }
+}
+
+#[derive(Serialize)]
+struct RuntimeSectionDump {
+    name: String,
+    va: u64,
+    rva: u64,
+    size: u64,
+    kind: &'static str,
+}
+
+fn runtime_section_dumps(
+    module_base: u64,
+    sections: &[engine::SectionInfo],
+) -> Vec<RuntimeSectionDump> {
+    sections
+        .iter()
+        .map(|section| RuntimeSectionDump {
+            name: section.name.clone(),
+            va: section.address,
+            rva: symbol_rva(module_base, section.address),
+            size: section.size,
+            kind: runtime_section_kind(section),
+        })
+        .collect()
 }
 
 fn format_runtime_sections_text(
@@ -869,6 +902,7 @@ struct RuntimeSymbolDumpEnvelope {
     filtered_summary: engine::RuntimeSymbolSummary,
     strings_scanned: usize,
     signature_hits: usize,
+    sections: Vec<RuntimeSectionDump>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
     symbols: Vec<engine::LoadedSymbol>,
@@ -1565,6 +1599,30 @@ mod tests {
     }
 
     #[test]
+    fn runtime_section_dumps_include_normalized_rva_and_kind() {
+        let sections = runtime_section_dumps(0x1800_0000, &test_sections());
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].name, ".text");
+        assert_eq!(sections[0].va, 0x1800_1000);
+        assert_eq!(sections[0].rva, 0x1000);
+        assert_eq!(sections[0].size, 0x100);
+        assert_eq!(sections[0].kind, "code");
+        assert_eq!(sections[1].kind, "data");
+    }
+
+    #[test]
+    fn runtime_section_json_includes_rva_and_kind_fields() {
+        let sections = runtime_section_dumps(0x1800_0000, &test_sections());
+        let json = serde_json::to_string(&sections).unwrap();
+
+        assert!(json.contains("\"name\":\".text\""));
+        assert!(json.contains("\"va\":402657280"));
+        assert!(json.contains("\"rva\":4096"));
+        assert!(json.contains("\"kind\":\"code\""));
+    }
+
+    #[test]
     fn runtime_symbol_filter_note_only_reports_empty_filtered_sets() {
         let symbols = vec![engine::LoadedSymbol {
             module: "client.dll".to_string(),
@@ -1632,6 +1690,10 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("section '.missing' was not found"));
+        assert!(
+            err.to_string()
+                .contains("available sections: .text, .rdata")
+        );
     }
 
     #[test]
