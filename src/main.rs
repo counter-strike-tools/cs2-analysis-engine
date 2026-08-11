@@ -200,6 +200,9 @@ enum Command {
         /// Keep only matches in this module section, for example .text or .rdata.
         #[arg(long)]
         section: Option<String>,
+        /// Keep only signature groups whose preset name contains this text.
+        #[arg(long)]
+        signature: Option<String>,
         /// Maximum text rows to print for each signature group. JSON output includes all filtered matches.
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -649,6 +652,7 @@ fn main() -> Result<()> {
         Command::Signatures {
             module,
             section,
+            signature,
             limit,
             hide_empty,
             min_matches,
@@ -665,6 +669,7 @@ fn main() -> Result<()> {
                 run_signature_presets(&image)?,
                 section.as_deref(),
             );
+            findings = filter_signature_findings_by_name(findings, signature.as_deref());
             if hide_empty {
                 findings.retain(|finding| !finding.matches.is_empty());
             }
@@ -677,6 +682,7 @@ fn main() -> Result<()> {
                     serde_json::to_string_pretty(&SignatureReportEnvelope {
                         module: module.display().to_string(),
                         section: section.clone(),
+                        signature: signature.clone(),
                         hide_empty,
                         min_matches,
                         signature_groups: findings.len(),
@@ -690,6 +696,7 @@ fn main() -> Result<()> {
                 format_signature_findings_text(
                     &module,
                     section.as_deref(),
+                    signature.as_deref(),
                     hide_empty,
                     min_matches,
                     limit,
@@ -1244,10 +1251,26 @@ fn filter_signature_findings_by_section(
         .collect()
 }
 
+fn filter_signature_findings_by_name(
+    findings: Vec<engine::SignatureFinding>,
+    signature: Option<&str>,
+) -> Vec<engine::SignatureFinding> {
+    let Some(signature) = signature else {
+        return findings;
+    };
+    let signature = signature.to_ascii_lowercase();
+
+    findings
+        .into_iter()
+        .filter(|finding| finding.signature.to_ascii_lowercase().contains(&signature))
+        .collect()
+}
+
 #[derive(Serialize)]
 struct SignatureReportEnvelope {
     module: String,
     section: Option<String>,
+    signature: Option<String>,
     hide_empty: bool,
     min_matches: usize,
     signature_groups: usize,
@@ -1258,6 +1281,7 @@ struct SignatureReportEnvelope {
 fn format_signature_findings_text(
     module: &PathBuf,
     section: Option<&str>,
+    signature: Option<&str>,
     hide_empty: bool,
     min_matches: usize,
     limit: usize,
@@ -1267,6 +1291,10 @@ fn format_signature_findings_text(
     let mut lines = Vec::new();
     lines.push(format!("module: {}", module.display()));
     lines.push(format!("section filter: {}", section.unwrap_or("<none>")));
+    lines.push(format!(
+        "signature filter: {}",
+        signature.unwrap_or("<none>")
+    ));
     lines.push(format!("hide empty groups: {hide_empty}"));
     lines.push(format!("minimum matches: {min_matches}"));
     lines.push(format!("signature groups: {}", findings.len()));
@@ -1898,6 +1926,31 @@ mod tests {
     }
 
     #[test]
+    fn signature_findings_can_be_filtered_by_name() {
+        let findings = vec![
+            engine::SignatureFinding {
+                signature: "rip relative lea".to_string(),
+                module_hint: "client.dll".to_string(),
+                pattern: "48 8D ??".to_string(),
+                description: "test preset".to_string(),
+                matches: Vec::new(),
+            },
+            engine::SignatureFinding {
+                signature: "virtual call site".to_string(),
+                module_hint: "any".to_string(),
+                pattern: "48 8B ??".to_string(),
+                description: "test preset".to_string(),
+                matches: Vec::new(),
+            },
+        ];
+
+        let filtered = filter_signature_findings_by_name(findings, Some("RIP"));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].signature, "rip relative lea");
+    }
+
+    #[test]
     fn signature_findings_can_hide_empty_groups_after_filtering() {
         let mut findings = filter_signature_findings_by_section(
             vec![
@@ -2002,6 +2055,7 @@ mod tests {
         let text = format_signature_findings_text(
             &PathBuf::from("client.dll"),
             Some(".text"),
+            Some("rip"),
             true,
             2,
             1,
@@ -2010,6 +2064,7 @@ mod tests {
 
         assert!(text.contains("module: client.dll"));
         assert!(text.contains("section filter: .text"));
+        assert!(text.contains("signature filter: rip"));
         assert!(text.contains("hide empty groups: true"));
         assert!(text.contains("minimum matches: 2"));
         assert!(text.contains("signature matches: 2"));
@@ -2044,6 +2099,7 @@ mod tests {
         let envelope = SignatureReportEnvelope {
             module: "client.dll".to_string(),
             section: Some(".text".to_string()),
+            signature: Some("rip".to_string()),
             hide_empty: true,
             min_matches: 1,
             signature_groups: findings.len(),
@@ -2054,6 +2110,7 @@ mod tests {
 
         assert!(json.contains("\"module\":\"client.dll\""));
         assert!(json.contains("\"section\":\".text\""));
+        assert!(json.contains("\"signature\":\"rip\""));
         assert!(json.contains("\"hide_empty\":true"));
         assert!(json.contains("\"min_matches\":1"));
         assert!(json.contains("\"signature_groups\":1"));
