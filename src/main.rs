@@ -215,6 +215,9 @@ enum Command {
         /// Sort signature groups by preset order, name, or match count.
         #[arg(long, value_enum, default_value_t = SignatureSort::Preset)]
         sort: SignatureSort,
+        /// Limit emitted matches per signature group after filtering.
+        #[arg(long)]
+        max_matches_per_group: Option<usize>,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -668,6 +671,7 @@ fn main() -> Result<()> {
             hide_empty,
             min_matches,
             sort,
+            max_matches_per_group,
             json,
             envelope,
             out,
@@ -677,7 +681,7 @@ fn main() -> Result<()> {
                 .or_else(auto_selected_module)
                 .context("no module provided and no CS2 module candidate was auto-detected")?;
             let image = ModuleImage::load(&module)?;
-            let findings = filter_signature_findings(SignatureFindingFilters {
+            let mut findings = filter_signature_findings(SignatureFindingFilters {
                 findings: run_signature_presets(&image)?,
                 section: section.as_deref(),
                 signature: signature.as_deref(),
@@ -685,6 +689,8 @@ fn main() -> Result<()> {
                 min_matches,
                 sort,
             });
+            let omitted_matches =
+                cap_signature_finding_matches(&mut findings, max_matches_per_group);
 
             let output = if json {
                 if envelope {
@@ -695,6 +701,8 @@ fn main() -> Result<()> {
                         hide_empty,
                         min_matches,
                         sort,
+                        max_matches_per_group,
+                        omitted_matches,
                         signature_groups: findings.len(),
                         signature_matches: signature_finding_match_count(&findings),
                         findings: findings.clone(),
@@ -710,6 +718,8 @@ fn main() -> Result<()> {
                     hide_empty,
                     min_matches,
                     sort,
+                    max_matches_per_group,
+                    omitted_matches,
                     limit,
                     &findings,
                 )
@@ -1312,6 +1322,24 @@ fn sort_signature_findings(findings: &mut [engine::SignatureFinding], sort: Sign
     }
 }
 
+fn cap_signature_finding_matches(
+    findings: &mut [engine::SignatureFinding],
+    max_matches_per_group: Option<usize>,
+) -> usize {
+    let Some(max_matches_per_group) = max_matches_per_group else {
+        return 0;
+    };
+
+    findings
+        .iter_mut()
+        .map(|finding| {
+            let omitted = finding.matches.len().saturating_sub(max_matches_per_group);
+            finding.matches.truncate(max_matches_per_group);
+            omitted
+        })
+        .sum()
+}
+
 #[derive(Serialize)]
 struct SignatureReportEnvelope {
     module: String,
@@ -1320,6 +1348,8 @@ struct SignatureReportEnvelope {
     hide_empty: bool,
     min_matches: usize,
     sort: SignatureSort,
+    max_matches_per_group: Option<usize>,
+    omitted_matches: usize,
     signature_groups: usize,
     signature_matches: usize,
     findings: Vec<engine::SignatureFinding>,
@@ -1332,6 +1362,8 @@ fn format_signature_findings_text(
     hide_empty: bool,
     min_matches: usize,
     sort: SignatureSort,
+    max_matches_per_group: Option<usize>,
+    omitted_matches: usize,
     limit: usize,
     findings: &[engine::SignatureFinding],
 ) -> String {
@@ -1346,6 +1378,13 @@ fn format_signature_findings_text(
     lines.push(format!("hide empty groups: {hide_empty}"));
     lines.push(format!("minimum matches: {min_matches}"));
     lines.push(format!("sort: {:?}", sort));
+    lines.push(format!(
+        "max matches per group: {}",
+        max_matches_per_group
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    ));
+    lines.push(format!("omitted matches: {omitted_matches}"));
     lines.push(format!("signature groups: {}", findings.len()));
     lines.push(format!("signature matches: {total_matches}"));
 
@@ -2232,6 +2271,43 @@ mod tests {
     }
 
     #[test]
+    fn signature_finding_matches_can_be_capped_per_group() {
+        let mut findings = vec![engine::SignatureFinding {
+            signature: "rip relative lea".to_string(),
+            module_hint: "client.dll".to_string(),
+            pattern: "48 8D ??".to_string(),
+            description: "test preset".to_string(),
+            matches: vec![
+                engine::PatternMatch {
+                    rva: 0x1000,
+                    virtual_address: 0x1800_1000,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                },
+                engine::PatternMatch {
+                    rva: 0x1010,
+                    virtual_address: 0x1800_1010,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                },
+                engine::PatternMatch {
+                    rva: 0x1020,
+                    virtual_address: 0x1800_1020,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                },
+            ],
+        }];
+
+        let omitted = cap_signature_finding_matches(&mut findings, Some(2));
+
+        assert_eq!(omitted, 1);
+        assert_eq!(findings[0].matches.len(), 2);
+        assert_eq!(findings[0].matches[0].rva, 0x1000);
+        assert_eq!(findings[0].matches[1].rva, 0x1010);
+    }
+
+    #[test]
     fn signature_text_reports_filters_and_truncation() {
         let findings = vec![engine::SignatureFinding {
             signature: "rip_relative_lea".to_string(),
@@ -2261,6 +2337,8 @@ mod tests {
             true,
             2,
             SignatureSort::Matches,
+            Some(1),
+            1,
             1,
             &findings,
         );
@@ -2271,6 +2349,8 @@ mod tests {
         assert!(text.contains("hide empty groups: true"));
         assert!(text.contains("minimum matches: 2"));
         assert!(text.contains("sort: Matches"));
+        assert!(text.contains("max matches per group: 1"));
+        assert!(text.contains("omitted matches: 1"));
         assert!(text.contains("signature matches: 2"));
         assert!(text.contains("rip_relative_lea [client.dll] 2 matches"));
         assert!(text.contains("... 1 more matches"));
@@ -2307,6 +2387,8 @@ mod tests {
             hide_empty: true,
             min_matches: 1,
             sort: SignatureSort::Matches,
+            max_matches_per_group: Some(1),
+            omitted_matches: 0,
             signature_groups: findings.len(),
             signature_matches: signature_finding_match_count(&findings),
             findings,
@@ -2319,6 +2401,8 @@ mod tests {
         assert!(json.contains("\"hide_empty\":true"));
         assert!(json.contains("\"min_matches\":1"));
         assert!(json.contains("\"sort\":\"matches\""));
+        assert!(json.contains("\"max_matches_per_group\":1"));
+        assert!(json.contains("\"omitted_matches\":0"));
         assert!(json.contains("\"signature_groups\":1"));
         assert!(json.contains("\"signature_matches\":1"));
         assert!(json.contains("\"findings\""));
