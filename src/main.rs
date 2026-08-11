@@ -840,6 +840,9 @@ fn format_runtime_symbols_text(input: RuntimeSymbolsText<'_>) -> String {
     }
     lines.push(format!("strings scanned: {}", input.strings_scanned));
     lines.push(format!("signature hits: {}", input.signature_hits));
+    if input.symbols.is_empty() && input.total_symbols > 0 {
+        lines.push(empty_runtime_symbol_filter_note().to_string());
+    }
 
     for symbol in input.symbols.iter().take(input.limit) {
         lines.push(format!(
@@ -929,6 +932,9 @@ fn format_runtime_symbols_csv(input: RuntimeSymbolsCsv<'_>) -> String {
         ));
         lines.push(format!("# strings_scanned={}", input.strings_scanned));
         lines.push(format!("# signature_hits={}", input.signature_hits));
+        if input.symbols.is_empty() && input.total_symbols > 0 {
+            lines.push(format!("# note={}", empty_runtime_symbol_filter_note()));
+        }
     }
 
     lines.push("module,va,rva,kind,name".to_string());
@@ -943,6 +949,10 @@ fn format_runtime_symbols_csv(input: RuntimeSymbolsCsv<'_>) -> String {
         ));
     }
     lines.join("\n")
+}
+
+fn empty_runtime_symbol_filter_note() -> &'static str {
+    "no runtime symbols matched the active filters; relax --contains, --kind, or RVA bounds"
 }
 
 fn csv_escape(value: &str) -> String {
@@ -1340,6 +1350,52 @@ mod tests {
         assert_eq!(rows[4], "# symbols filtered=1 total=3");
         assert_eq!(rows[8], "# signature_hits=99");
         assert_eq!(rows[9], "module,va,rva,kind,name");
+    }
+
+    #[test]
+    fn runtime_symbol_csv_metadata_notes_empty_filtered_results() {
+        let summary = engine::RuntimeSymbolSummary::default();
+        let csv = format_runtime_symbols_csv(RuntimeSymbolsCsv {
+            module: &PathBuf::from("client.dll"),
+            module_base: 0x1800_0000,
+            symbols: &[],
+            total_symbols: 3,
+            filtered_summary: &summary,
+            total_summary: &summary,
+            sort: RuntimeSymbolSort::Address,
+            contains: Some("missing"),
+            kind: None,
+            rva_min: None,
+            rva_max: None,
+            strings_scanned: 12,
+            signature_hits: 99,
+            include_metadata: true,
+        });
+
+        assert!(csv.contains("# note=no runtime symbols matched the active filters"));
+    }
+
+    #[test]
+    fn runtime_symbol_text_notes_empty_filtered_results() {
+        let summary = engine::RuntimeSymbolSummary::default();
+        let text = format_runtime_symbols_text(RuntimeSymbolsText {
+            module: &PathBuf::from("client.dll"),
+            module_base: 0x1800_0000,
+            symbols: &[],
+            total_symbols: 3,
+            filtered_summary: &summary,
+            total_summary: &summary,
+            sort: RuntimeSymbolSort::Address,
+            contains: Some("missing"),
+            kind: None,
+            rva_min: None,
+            rva_max: None,
+            strings_scanned: 12,
+            signature_hits: 99,
+            limit: 10,
+        });
+
+        assert!(text.contains("no runtime symbols matched the active filters"));
     }
 
     #[test]
