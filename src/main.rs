@@ -183,7 +183,7 @@ enum Command {
         /// With --json, include module, filters, summaries, and symbols in one object.
         #[arg(long)]
         envelope: bool,
-        /// Emit CSV with module, VA, RVA, kind, and name columns.
+        /// Emit CSV with module, section, VA, RVA, kind, and name columns.
         #[arg(long)]
         csv: bool,
         /// With --csv, prepend comment metadata rows before the table header.
@@ -195,11 +195,20 @@ enum Command {
     },
     /// Run built-in offline signature finders against a module.
     Signatures {
-        /// Path to a module file such as client.dll.
-        module: PathBuf,
+        /// Optional module file. If omitted, the best detected CS2 module is used.
+        module: Option<PathBuf>,
+        /// Keep only matches in this module section, for example .text or .rdata.
+        #[arg(long)]
+        section: Option<String>,
+        /// Maximum text rows to print for each signature group. JSON output includes all filtered matches.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+        /// Write the signature report to a file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Show symbols loaded from cs2-dumper JSON output.
     Symbols {
@@ -628,26 +637,33 @@ fn main() -> Result<()> {
 
             Ok(())
         }
-        Command::Signatures { module, json } => {
+        Command::Signatures {
+            module,
+            section,
+            limit,
+            json,
+            out,
+        } => {
+            let module = module
+                .or_else(auto_selected_module)
+                .context("no module provided and no CS2 module candidate was auto-detected")?;
             let image = ModuleImage::load(&module)?;
-            let findings = run_signature_presets(&image)?;
+            let findings = filter_signature_findings_by_section(
+                run_signature_presets(&image)?,
+                section.as_deref(),
+            );
 
-            if json {
-                println!("{}", serde_json::to_string_pretty(&findings)?);
+            let output = if json {
+                serde_json::to_string_pretty(&findings)?
             } else {
-                for finding in findings {
-                    println!(
-                        "{} [{}] {} matches",
-                        finding.signature,
-                        finding.module_hint,
-                        finding.matches.len()
-                    );
-                    println!("  pattern: {}", finding.pattern);
-                    println!("  {}", finding.description);
-                    for item in finding.matches.iter().take(20) {
-                        println!("    {}", format_pattern_match(item));
-                    }
-                }
+                format_signature_findings_text(&module, section.as_deref(), limit, &findings)
+            };
+
+            if let Some(path) = out {
+                write_report_file(&path, &output)?;
+                println!("wrote signature report: {}", path.display());
+            } else {
+                println!("{output}");
             }
 
             Ok(())
@@ -1161,6 +1177,59 @@ fn csv_escape(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn filter_signature_findings_by_section(
+    findings: Vec<engine::SignatureFinding>,
+    section: Option<&str>,
+) -> Vec<engine::SignatureFinding> {
+    let Some(section) = section else {
+        return findings;
+    };
+
+    findings
+        .into_iter()
+        .map(|mut finding| {
+            finding
+                .matches
+                .retain(|item| item.section.eq_ignore_ascii_case(section));
+            finding
+        })
+        .collect()
+}
+
+fn format_signature_findings_text(
+    module: &PathBuf,
+    section: Option<&str>,
+    limit: usize,
+    findings: &[engine::SignatureFinding],
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("module: {}", module.display()));
+    lines.push(format!("section filter: {}", section.unwrap_or("<none>")));
+    lines.push(format!("signature groups: {}", findings.len()));
+
+    for finding in findings {
+        lines.push(format!(
+            "{} [{}] {} matches",
+            finding.signature,
+            finding.module_hint,
+            finding.matches.len()
+        ));
+        lines.push(format!("  pattern: {}", finding.pattern));
+        lines.push(format!("  {}", finding.description));
+        for item in finding.matches.iter().take(limit) {
+            lines.push(format!("    {}", format_pattern_match(item)));
+        }
+        if finding.matches.len() > limit {
+            lines.push(format!(
+                "    ... {} more matches",
+                finding.matches.len() - limit
+            ));
+        }
+    }
+
+    lines.join("\n")
 }
 
 fn format_instruction_target(instruction: &engine::DecodedInstruction) -> String {
@@ -1729,6 +1798,72 @@ mod tests {
         assert!(json.contains("\"va\":402665488"));
         assert!(json.contains("\"rva\":12304"));
         assert!(json.contains("\"kind\":\"interface\""));
+    }
+
+    #[test]
+    fn signature_findings_can_be_filtered_by_section() {
+        let findings = vec![engine::SignatureFinding {
+            signature: "rip_relative_lea".to_string(),
+            module_hint: "client.dll".to_string(),
+            pattern: "48 8D ??".to_string(),
+            description: "test preset".to_string(),
+            matches: vec![
+                engine::PatternMatch {
+                    rva: 0x1000,
+                    virtual_address: 0x1800_1000,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                },
+                engine::PatternMatch {
+                    rva: 0x3000,
+                    virtual_address: 0x1800_3000,
+                    section: ".rdata".to_string(),
+                    nearby_string: None,
+                },
+            ],
+        }];
+
+        let filtered = filter_signature_findings_by_section(findings, Some(".TEXT"));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].matches.len(), 1);
+        assert_eq!(filtered[0].matches[0].section, ".text");
+    }
+
+    #[test]
+    fn signature_text_reports_filters_and_truncation() {
+        let findings = vec![engine::SignatureFinding {
+            signature: "rip_relative_lea".to_string(),
+            module_hint: "client.dll".to_string(),
+            pattern: "48 8D ??".to_string(),
+            description: "test preset".to_string(),
+            matches: vec![
+                engine::PatternMatch {
+                    rva: 0x1000,
+                    virtual_address: 0x1800_1000,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                },
+                engine::PatternMatch {
+                    rva: 0x1010,
+                    virtual_address: 0x1800_1010,
+                    section: ".text".to_string(),
+                    nearby_string: None,
+                },
+            ],
+        }];
+
+        let text = format_signature_findings_text(
+            &PathBuf::from("client.dll"),
+            Some(".text"),
+            1,
+            &findings,
+        );
+
+        assert!(text.contains("module: client.dll"));
+        assert!(text.contains("section filter: .text"));
+        assert!(text.contains("rip_relative_lea [client.dll] 2 matches"));
+        assert!(text.contains("... 1 more matches"));
     }
 
     #[test]
